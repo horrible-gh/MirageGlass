@@ -7,8 +7,9 @@
 <style>
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; font-family: system-ui, "Segoe UI", sans-serif; }
-  #app { display: flex; height: 100%; }
-  #rail { width: 232px; flex: none; border-right: 1px solid #e3e3e6; overflow-y: auto; background: #fafafb; }
+  #app { --rail-w: 232px; display: flex; height: 100%; }
+  #rail { width: var(--rail-w); flex: none; border-right: 1px solid #e3e3e6; overflow-y: auto; background: #fafafb; }
+  #app.rail-hidden #rail { width: 0; border-right: 0; overflow: hidden; }
   #rail .item { padding: 10px; cursor: pointer; border-bottom: 1px solid #ededf0; }
   #rail .item.active { background: #e8f0fe; }
   #rail .thumb { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top;
@@ -22,6 +23,7 @@
          padding: 0 12px; border-bottom: 1px solid #e3e3e6; font-size: 13px; }
   #bar .title { font-weight: 600; }
   #bar button { font-size: 12px; padding: 3px 8px; }
+  #rail-toggle { width: 32px; line-height: 1.2; }
   #frame { flex: 1; border: 0; width: 100%; }
   .empty { padding: 24px; color: #8a8a92; }
 </style>
@@ -30,7 +32,9 @@
 <div id="app">
   <aside id="rail"><div class="empty">Loading…</div></aside>
   <main id="stage">
-    <div id="bar"><span class="title">MirageGlass</span>
+    <div id="bar"><button id="rail-toggle" aria-expanded="true" aria-controls="rail"
+        aria-label="Toggle deck list" title="Hide deck list">&#9776;</button>
+      <span class="title">MirageGlass</span>
       <button id="copy" hidden>Copy link</button></div>
     <iframe id="frame" title="Deck"></iframe>
   </main>
@@ -39,6 +43,31 @@
 // Left rail = list of uploaded decks (newest first). Clicking one loads it into the iframe on the right.
 let decks = [];
 let currentId = null;
+
+function applyRail(hidden) {
+  document.getElementById('app').classList.toggle('rail-hidden', hidden);
+  const toggle = document.getElementById('rail-toggle');
+  toggle.setAttribute('aria-expanded', String(!hidden));
+  toggle.title = hidden ? 'Show deck list' : 'Hide deck list';
+}
+
+let railHidden = false;
+try {
+  railHidden = localStorage.getItem('mg.rail.hidden') === 'true';
+} catch (error) {
+  // Keep the default expanded state when storage is unavailable.
+}
+applyRail(railHidden);
+
+document.getElementById('rail-toggle').onclick = () => {
+  const hidden = !document.getElementById('app').classList.contains('rail-hidden');
+  applyRail(hidden);
+  try {
+    localStorage.setItem('mg.rail.hidden', String(hidden));
+  } catch (error) {
+    // The current state still applies for this page session.
+  }
+};
 
 // A deck name is a string chosen by the uploader. Never drop it into innerHTML as-is.
 function esc(s) {

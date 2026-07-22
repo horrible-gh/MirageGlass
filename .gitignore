@@ -1,0 +1,6 @@
+# Runtime artifacts - never committed to the source tree.
+__pycache__/
+*.pyc
+.venv/
+storage/
+.env

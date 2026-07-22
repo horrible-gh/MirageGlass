@@ -1,0 +1,12 @@
+{
+    "decks": {
+        "create": "INSERT INTO decks (id, name, group_key, status, has_thumb, idempotency_key, error_message, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, NULL, ?, ?)",
+        "get_by_id": "SELECT * FROM decks WHERE id = ?",
+        "get_by_idempotency_key": "SELECT * FROM decks WHERE idempotency_key = ?",
+        "list_ready_latest": "SELECT * FROM decks WHERE status = 'ready' ORDER BY created_at DESC, id DESC",
+        "list_all_latest": "SELECT * FROM decks ORDER BY created_at DESC, id DESC",
+        "update_status": "UPDATE decks SET status = ?, error_message = ?, updated_at = ? WHERE id = ?",
+        "update_thumb": "UPDATE decks SET has_thumb = ?, updated_at = ? WHERE id = ?",
+        "delete": "DELETE FROM decks WHERE id = ?"
+    }
+}

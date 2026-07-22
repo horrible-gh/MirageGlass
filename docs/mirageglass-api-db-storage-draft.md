@@ -11,6 +11,8 @@ expensive if they drift.
 | POST | `/api/v1/decks` | Bearer | multipart: `file`, `name`, `idempotency_key` -> 201 new / 200 replay |
 | GET | `/api/v1/decks` | none | `ready` only, `created_at DESC` |
 | GET | `/api/v1/decks/{id}` | none | single deck |
+| GET | `/api/v1/decks/{id}/download` | none | ready deck source as a re-registerable zip; 404 missing / 409 not ready |
+| GET | `/api/v1/decks/{id}/files` | none | sorted source-relative file paths and sizes; 404 missing / 409 not ready |
 | DELETE | `/api/v1/decks/{id}` | Bearer | files first, database second -> 204 |
 | GET | `/v/{id}/{path}` | none | static serving of `storage/decks/{id}/src` |
 | GET | `/thumbs/{id}.png` | none | captured png |
@@ -19,7 +21,7 @@ Public response fields: `id`, `name`, `status`, `viewer_url`, `thumb_url`, `crea
 `thumb_url` is `null` when the capture failed, and the UI falls back to a numbered card.
 
 Response codes: 201 new / 200 idempotent replay / 400 bad input or rejected zip / 401 token /
-404 not found / 500 processing failure.
+404 not found / 409 deck not ready / 500 processing failure.
 
 ## Table — `server/sql/migrations/sqlite/001_create_decks.sql`
 

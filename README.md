@@ -85,6 +85,21 @@ you have to be able to fix the zip and retry with the same key.
 Response codes: `201` new / `200` idempotent replay / `400` bad input or rejected zip /
 `401` token / `404` not found / `500` processing failure.
 
+## Editing a deck
+
+Download a ready deck, edit the extracted files, delete the old deck, and register a new zip.
+The download and file manifest are read operations and do not require authentication.
+
+```bash
+curl -o deck.zip http://127.0.0.1:8100/api/v1/decks/$DECK_ID/download
+curl http://127.0.0.1:8100/api/v1/decks/$DECK_ID/files
+```
+
+The downloaded archive has `index.html` at its root and can be posted back without changing its
+layout. It is rebuilt from `storage/decks/{id}/src`, so it is not a byte-for-byte copy of the
+original upload. Since overwrite is not supported, re-registering creates a new deck id and
+viewer URL; use a new `idempotency_key` for the edited upload.
+
 ## Storage layout
 
 ```

@@ -24,6 +24,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, RedirectResponse
+from starlette.background import BackgroundTask
 
 from . import storage, thumbnail
 from .config import database, settings
@@ -134,6 +135,53 @@ def get_deck(deck_id: str, repo: DeckRepository = Depends(get_repo)):
     return to_public(row)
 
 
+def _require_ready_deck(deck_id: str, repo: DeckRepository) -> None:
+    row = repo.get(deck_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="not found")
+    if row["status"] != "ready":
+        raise HTTPException(status_code=409, detail="deck is not ready")
+
+
+@api_router.get("/decks/{deck_id}/download")
+def download_deck(deck_id: str, repo: DeckRepository = Depends(get_repo)):
+    _require_ready_deck(deck_id, repo)
+    settings.ensure_dirs()
+    archive_file = tempfile.NamedTemporaryFile(
+        prefix=f"{deck_id}_", suffix=".zip", dir=settings.tmp_dir, delete=False
+    )
+    archive_path = Path(archive_file.name)
+    archive_file.close()
+    try:
+        if not storage.build_deck_archive(settings, deck_id, archive_path):
+            raise HTTPException(status_code=404, detail="source files not found")
+    except HTTPException:
+        archive_path.unlink(missing_ok=True)
+        raise
+    except (FileNotFoundError, PermissionError):
+        archive_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=404, detail="source files not found")
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename=f"{deck_id}.zip",
+        background=BackgroundTask(archive_path.unlink, missing_ok=True),
+    )
+
+
+@api_router.get("/decks/{deck_id}/files")
+def list_deck_files(deck_id: str, repo: DeckRepository = Depends(get_repo)):
+    _require_ready_deck(deck_id, repo)
+    items = storage.iter_deck_files(settings, deck_id)
+    if items is None:
+        raise HTTPException(status_code=404, detail="source files not found")
+    return {"items": [{"path": path, "size": size} for path, size in items]}
+
+
 @api_router.delete("/decks/{deck_id}", status_code=204)
 def delete_deck(
     deck_id: str,
@@ -166,13 +214,13 @@ def help_document():
             "scheme": "Bearer",
             "header": "Authorization: Bearer <MIRAGEGLASS_TOKEN>",
             "required_for": ["POST /api/v1/decks", "DELETE /api/v1/decks/{deck_id}"],
-            "note": "Read operations (GET /api/v1/decks, /v, /thumbs, /api/v1/help) need no auth.",
+            "note": "Read operations, including deck downloads and file manifests, need no auth.",
         },
         "workflow": [
             "1) POST /api/v1/decks to register a zip (multipart: file, name, idempotency_key)",
-            "2) Build the viewer URL /v/{id}/ from the id in the response (the trailing slash is required)",
-            "3) GET /api/v1/decks for the list, newest first",
-            "4) DELETE /api/v1/decks/{id} once you no longer need it",
+            "2) GET /api/v1/decks/{id}/download to retrieve the current source zip before editing",
+            "3) Edit the downloaded source, then DELETE /api/v1/decks/{id}",
+            "4) POST the edited zip with a new idempotency_key; the replacement receives a new id and viewer URL",
         ],
         "endpoints": [
             {
@@ -204,6 +252,18 @@ def help_document():
                 "path": "/api/v1/decks/{deck_id}",
                 "auth": False,
                 "description": "A single deck. 404 if it does not exist.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/v1/decks/{deck_id}/download",
+                "auth": False,
+                "description": "Download the ready deck source as a re-registerable zip. Returns 404 if missing and 409 if not ready.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/v1/decks/{deck_id}/files",
+                "auth": False,
+                "description": "List source-relative file paths and sizes for a ready deck. Returns 404 if missing and 409 if not ready.",
             },
             {
                 "method": "DELETE",
@@ -252,10 +312,10 @@ def help_document():
         },
         "gotchas": [
             "/v/{id} without the trailing slash is answered with a 307 redirect. Relative paths inside the deck can break, so call /v/{id}/ from the start.",
-            "Multipart fields must be sent as UTF-8. If the console code page is not UTF-8 (cp932, cp949, ...), curl.exe -F with a non-ASCII name stores mojibake or '?'. The server writes the bytes it receives, unchanged.",
+            "Multipart fields must be sent as UTF-8, and index.html must be at the zip root. If the console code page is not UTF-8 (cp932, cp949, ...), curl.exe -F with a non-ASCII name stores mojibake or '?'.",
             "A failed thumbnail capture still leaves the registration successful (ready). Check the thumb field to see whether one exists.",
-            "A zip without index.html at its root is rejected with 400. Do not nest it inside a subfolder.",
             "A registration that ended as failed is retried from scratch under the same idempotency_key: the leftovers are cleaned up first.",
+            "A downloaded zip is rebuilt from the stored source rather than copied byte-for-byte from the upload. Re-registering it creates a new deck id and viewer URL.",
         ],
     }
 

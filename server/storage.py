@@ -107,6 +107,45 @@ def resolve_asset(settings, deck_id: str, rel_path: str) -> Optional[Path]:
     return candidate
 
 
+def iter_deck_files(settings, deck_id: str) -> Optional[list[tuple[str, int]]]:
+    """Return safe source-relative file paths and sizes in stable order."""
+    src_root = deck_src_dir(settings, deck_id).resolve()
+    if not src_root.is_dir():
+        return None
+
+    files = []
+    try:
+        for candidate in src_root.rglob("*"):
+            resolved = candidate.resolve()
+            if resolved != src_root and src_root not in resolved.parents:
+                continue
+            if not resolved.is_file():
+                continue
+            files.append((candidate.relative_to(src_root).as_posix(), resolved.stat().st_size))
+    except (FileNotFoundError, PermissionError):
+        return None
+
+    if not src_root.is_dir():
+        return None
+    return sorted(files, key=lambda item: item[0])
+
+
+def build_deck_archive(settings, deck_id: str, out_path: Path) -> bool:
+    """Write a source-rooted deck zip to disk without buffering it in memory."""
+    files = iter_deck_files(settings, deck_id)
+    if files is None:
+        return False
+
+    src_root = deck_src_dir(settings, deck_id).resolve()
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for rel_path, _ in files:
+            source = (src_root / rel_path).resolve()
+            if source != src_root and src_root not in source.parents:
+                continue
+            zf.write(source, arcname=rel_path)
+    return True
+
+
 def publish(tmp_src: Path, final_dir: Path) -> None:
     """Move a fully validated tmp directory to its final location."""
     final_dir.parent.mkdir(parents=True, exist_ok=True)

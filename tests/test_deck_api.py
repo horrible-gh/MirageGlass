@@ -174,7 +174,8 @@ def test_download_and_manifest_reject_non_ready_deck(app_client, auth_headers, d
     from server.config import database
     from server.repository import DeckRepository
 
-    DeckRepository(database.sqloader).set_status(deck_id, "processing")
+    # Force the active version off "ready": download/files must then refuse it.
+    DeckRepository(database.sqloader).set_version_status(deck_id, 1, "processing")
     assert app_client.get(f"/api/v1/decks/{deck_id}/download").status_code == 409
     assert app_client.get(f"/api/v1/decks/{deck_id}/files").status_code == 409
 
@@ -194,7 +195,7 @@ def test_download_and_manifest_return_404_when_source_is_missing(
     from server import storage
     from server.config import settings
 
-    shutil.rmtree(storage.deck_src_dir(settings, deck_id))
+    shutil.rmtree(storage.version_src_dir(settings, deck_id, 1))
     assert app_client.get(f"/api/v1/decks/{deck_id}/download").status_code == 404
     assert app_client.get(f"/api/v1/decks/{deck_id}/files").status_code == 404
 

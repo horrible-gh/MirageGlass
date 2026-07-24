@@ -39,16 +39,18 @@ def test_help_requires_no_auth(app_client):
 
 def test_help_top_level_shape(help_doc):
     assert TOP_LEVEL_KEYS <= set(help_doc)
-    assert len(help_doc["workflow"]) == 4
-    assert len(help_doc["gotchas"]) == 5
-    assert len(help_doc["endpoints"]) == 10
+    assert len(help_doc["workflow"]) == 5
+    assert len(help_doc["gotchas"]) == 9
+    assert len(help_doc["endpoints"]) == 13
 
 
-def test_help_auth_block_lists_the_two_protected_endpoints(help_doc):
+def test_help_auth_block_lists_the_protected_endpoints(help_doc):
     auth = help_doc["auth"]
     assert auth["scheme"] == "Bearer"
     assert set(auth["required_for"]) == {
         "POST /api/v1/decks",
+        "POST /api/v1/decks/{deck_id}/versions",
+        "POST /api/v1/decks/{deck_id}/versions/{version_no}/activate",
         "DELETE /api/v1/decks/{deck_id}",
     }
 

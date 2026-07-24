@@ -1,12 +1,20 @@
 {
     "decks": {
-        "create": "INSERT INTO decks (id, name, group_key, status, has_thumb, idempotency_key, error_message, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, NULL, ?, ?)",
-        "get_by_id": "SELECT * FROM decks WHERE id = ?",
-        "get_by_idempotency_key": "SELECT * FROM decks WHERE idempotency_key = ?",
-        "list_ready_latest": "SELECT * FROM decks WHERE status = 'ready' ORDER BY created_at DESC, id DESC",
-        "list_all_latest": "SELECT * FROM decks ORDER BY created_at DESC, id DESC",
-        "update_status": "UPDATE decks SET status = ?, error_message = ?, updated_at = ? WHERE id = ?",
-        "update_thumb": "UPDATE decks SET has_thumb = ?, updated_at = ? WHERE id = ?",
+        "create": "INSERT INTO decks (id, name, active_version, created_at, updated_at) VALUES (?, ?, NULL, ?, ?)",
+        "get_by_id": "SELECT d.id, d.name, d.active_version, d.created_at, d.updated_at, v.status AS active_status, v.has_thumb AS active_has_thumb, (SELECT MAX(version_no) FROM deck_versions WHERE deck_id = d.id) AS latest_version FROM decks d LEFT JOIN deck_versions v ON v.deck_id = d.id AND v.version_no = d.active_version WHERE d.id = ?",
+        "list_ready_latest": "SELECT d.id, d.name, d.active_version, d.created_at, d.updated_at, v.status AS active_status, v.has_thumb AS active_has_thumb, (SELECT MAX(version_no) FROM deck_versions WHERE deck_id = d.id) AS latest_version FROM decks d JOIN deck_versions v ON v.deck_id = d.id AND v.version_no = d.active_version WHERE v.status = 'ready' ORDER BY d.created_at DESC, d.id DESC",
+        "set_active": "UPDATE decks SET active_version = ?, updated_at = ? WHERE id = ?",
         "delete": "DELETE FROM decks WHERE id = ?"
+    },
+    "deck_versions": {
+        "create": "INSERT INTO deck_versions (deck_id, version_no, status, has_thumb, idempotency_key, error_message, created_at, updated_at) VALUES (?, ?, 'processing', 0, ?, NULL, ?, ?)",
+        "get": "SELECT * FROM deck_versions WHERE deck_id = ? AND version_no = ?",
+        "list_by_deck": "SELECT * FROM deck_versions WHERE deck_id = ? ORDER BY version_no ASC",
+        "get_by_idempotency_key": "SELECT * FROM deck_versions WHERE idempotency_key = ?",
+        "max_version": "SELECT MAX(version_no) AS n FROM deck_versions WHERE deck_id = ?",
+        "update_status": "UPDATE deck_versions SET status = ?, error_message = ?, updated_at = ? WHERE deck_id = ? AND version_no = ?",
+        "update_thumb": "UPDATE deck_versions SET has_thumb = ?, updated_at = ? WHERE deck_id = ? AND version_no = ?",
+        "delete_one": "DELETE FROM deck_versions WHERE deck_id = ? AND version_no = ?",
+        "delete_by_deck": "DELETE FROM deck_versions WHERE deck_id = ?"
     }
 }

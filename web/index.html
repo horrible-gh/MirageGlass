@@ -26,6 +26,10 @@
   #version-section[hidden] { display: none; }
   #version-section { border-top: 1px solid #dfe1e5; }
   .version-card { margin: 8px 10px; padding: 9px; border: 1px solid #dfe1e5; border-radius: 6px; background: #fff; }
+  .version-card.selectable { cursor: pointer; }
+  .version-card.selectable:hover { border-color: #c6d6f5; background: #f6f9ff; }
+  .version-card.viewing { border-color: #1a73e8; background: #f0f6ff; box-shadow: inset 3px 0 #1a73e8; }
+  .version-card:focus-visible { outline: 2px solid #1a73e8; outline-offset: 1px; }
   .version-line { display: flex; align-items: center; gap: 5px; min-width: 0; }
   .version-number { font-size: 12px; font-weight: 700; }
   .version-position { margin-left: auto; color: #858890; font-size: 10px; }
@@ -40,6 +44,8 @@
   #bar { min-height: 48px; flex: none; display: flex; align-items: center; gap: 10px; padding: 7px 12px;
          border-bottom: 1px solid #dfe1e5; background: #fff; font-size: 13px; }
   #bar .title { min-width: 0; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+  .viewing-tag { flex: none; padding: 2px 8px; border-radius: 999px; background: #fef7e0; color: #9a6700;
+                 font-size: 11px; font-weight: 700; white-space: nowrap; }
   #bar button { padding: 5px 9px; border: 1px solid #c7c9cd; border-radius: 5px; background: #fff; color: #3c4043; cursor: pointer; font-size: 12px; }
   #bar button:hover { background: #f5f6f7; }
   #rail-toggle { width: 34px; flex: none; line-height: 1.2; }
@@ -48,7 +54,7 @@
   #mode-switch button:first-child { border-radius: 5px 0 0 5px; }
   #mode-switch button:last-child { margin-left: -1px; border-radius: 0 5px 5px 0; }
   #mode-switch button[aria-pressed="true"] { position: relative; border-color: #1a73e8; background: #e8f0fe; color: #174ea6; }
-  #copy[hidden], #mode-switch[hidden], #compare-controls[hidden] { display: none; }
+  #copy[hidden], #mode-switch[hidden], #compare-controls[hidden], #viewing-tag[hidden] { display: none; }
   #compare-controls { min-height: 48px; flex: none; display: flex; align-items: center; justify-content: center; gap: 10px;
                       padding: 7px 12px; border-bottom: 1px solid #dfe1e5; background: #fafafb; font-size: 12px; }
   #compare-controls label { display: flex; align-items: center; gap: 6px; font-weight: 650; }
@@ -84,6 +90,7 @@
     <div id="bar">
       <button id="rail-toggle" aria-expanded="true" aria-controls="rail" aria-label="Toggle deck list" title="Hide deck list">&#9776;</button>
       <span class="title">MirageGlass</span>
+      <span id="viewing-tag" class="viewing-tag" hidden></span>
       <div id="mode-switch" hidden aria-label="Viewer mode">
         <button type="button" data-mode="single" aria-pressed="true">Active</button>
         <button type="button" data-mode="compare" aria-pressed="false">Compare</button>
@@ -109,12 +116,16 @@
 </div>
 <script>
 // The stable active viewer and the read-only version comparison view share this page.
+// The single ("Active") pane also lets the reader open any past ready version from the
+// version-history rail; doing so never moves the deck's active pointer (compare is
+// untouched by this). viewingVersion tracks which version that single pane is showing.
 let decks = [];
 let currentId = null;
 let versionData = null;
 let mode = 'single';
 let versionA = null;
 let versionB = null;
+let viewingVersion = null;
 const initialMode = new URLSearchParams(location.search).get('mode');
 
 function applyRail(hidden) {
@@ -169,6 +180,10 @@ function renderDecks() {
   });
 }
 
+function activeVersionNo() {
+  return versionData ? versionData.active_version : null;
+}
+
 function renderVersions(errorMessage) {
   const section = document.getElementById('version-section');
   const list = document.getElementById('version-list');
@@ -186,15 +201,36 @@ function renderVersions(errorMessage) {
     list.innerHTML = '<div class="empty">No versions found.</div>';
     return;
   }
-  list.innerHTML = versionData.items.map(item => {
-    const active = item.is_active ? '<span class="badge active">Active</span>' : '';
-    const latest = item.version === versionData.latest_version ? '<span class="badge latest">Latest</span>' : '';
-    return `<div class="version-card">
-      <div class="version-line"><span class="version-number">v${esc(item.version)}</span>${active}${latest}
+  const active = activeVersionNo();
+  list.innerHTML = '';
+  versionData.items.forEach(item => {
+    // Only ready versions can be opened, and only the single pane navigates
+    // history - compare keeps its own dropdown-driven selection.
+    const selectable = item.status === 'ready' && mode === 'single';
+    const viewing = selectable && item.version === viewingVersion;
+    const card = document.createElement('div');
+    card.className = 'version-card'
+      + (selectable ? ' selectable' : '')
+      + (viewing ? ' viewing' : '');
+    const activeBadge = item.version === active ? '<span class="badge active">Active</span>' : '';
+    const latestBadge = item.version === versionData.latest_version ? '<span class="badge latest">Latest</span>' : '';
+    card.innerHTML = `<div class="version-line"><span class="version-number">v${esc(item.version)}</span>${activeBadge}${latestBadge}
         <span class="version-position">${esc(item.version)} / ${esc(versionData.latest_version)}</span></div>
-      <div class="version-meta"><span class="status-${esc(item.status)}">${esc(item.status)}</span> - ${esc(item.created_at)}</div>
-    </div>`;
-  }).join('');
+      <div class="version-meta"><span class="status-${esc(item.status)}">${esc(item.status)}</span> - ${esc(item.created_at)}</div>`;
+    if (selectable) {
+      card.setAttribute('role', 'button');
+      card.setAttribute('tabindex', '0');
+      card.setAttribute('aria-pressed', String(viewing));
+      card.onclick = () => viewVersion(item.version);
+      card.onkeydown = event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          viewVersion(item.version);
+        }
+      };
+    }
+    list.appendChild(card);
+  });
 }
 
 function readyVersions() {
@@ -203,6 +239,34 @@ function readyVersions() {
 
 function versionUrl(version) {
   return '/v/' + encodeURIComponent(currentId) + '/v' + encodeURIComponent(version) + '/';
+}
+
+// The single pane serves the active version through the stable /v/{id}/ link and any
+// other ready version through its read-only /v/{id}/v{n}/ route.
+function singleFrameUrl(version) {
+  const deck = decks.find(item => item.id === currentId);
+  if (version != null && version !== activeVersionNo()) return versionUrl(version);
+  return deck ? deck.viewer_url : '';
+}
+
+function updateViewingTag() {
+  const tag = document.getElementById('viewing-tag');
+  const active = activeVersionNo();
+  if (mode === 'single' && viewingVersion != null && viewingVersion !== active) {
+    tag.textContent = 'Viewing v' + viewingVersion + ' (not active)';
+    tag.hidden = false;
+  } else {
+    tag.hidden = true;
+  }
+}
+
+function viewVersion(version) {
+  // A history click is a single-pane action; return from compare first if needed.
+  if (mode !== 'single') setMode('single');
+  viewingVersion = version;
+  document.getElementById('frame-a').src = singleFrameUrl(version);
+  updateViewingTag();
+  renderVersions();
 }
 
 function setCompareSources() {
@@ -239,9 +303,15 @@ function setMode(nextMode) {
   if (mode === 'compare') {
     setCompareSources();
   } else {
+    // Switching to the single pane always returns to the deck's active version.
     const deck = decks.find(item => item.id === currentId);
-    if (deck) document.getElementById('frame-a').src = deck.viewer_url;
+    if (deck) {
+      viewingVersion = activeVersionNo();
+      document.getElementById('frame-a').src = deck.viewer_url;
+    }
   }
+  renderVersions();
+  updateViewingTag();
 }
 
 async function selectDeck(id) {
@@ -251,6 +321,7 @@ async function selectDeck(id) {
   versionData = null;
   versionA = null;
   versionB = null;
+  viewingVersion = null;
   document.querySelector('#bar .title').textContent = deck.name;
   document.getElementById('copy').hidden = false;
   document.getElementById('mode-switch').hidden = false;
@@ -267,6 +338,8 @@ async function selectDeck(id) {
     const data = await response.json();
     if (currentId !== id) return;
     versionData = { ...data, items: data.items || [] };
+    // The single pane starts on the active version; the rail highlights it.
+    viewingVersion = versionData.active_version;
     const ready = readyVersions();
     if (ready.length) {
       const activeIndex = Math.max(0, ready.findIndex(item => item.is_active));
@@ -274,6 +347,7 @@ async function selectDeck(id) {
       versionA = ready[Math.max(0, activeIndex - 1)].version;
     }
     renderVersions();
+    updateViewingTag();
     if (initialMode === 'compare') {
       setMode('compare');
     } else {

@@ -23,6 +23,7 @@ HANGUL = re.compile("[\uac00-\ud7a3\u3130-\u318f\u1100-\u11ff]")
 SUFFIXES = {".py", ".md", ".html", ".css", ".js", ".json", ".sql", ".txt", ".example"}
 IGNORED_DIRS = {"storage", ".venv", ".git", "__pycache__", "node_modules"}
 IGNORED_NAMES = {".env"}
+FLOWGATE_DOC = re.compile(r"^[A-Z]{1,3}\d{4}\.md$")
 
 
 def _tracked_text_files() -> list[Path]:
@@ -32,6 +33,8 @@ def _tracked_text_files() -> list[Path]:
             continue
         rel = path.relative_to(PROJECT_ROOT)
         if IGNORED_DIRS & set(rel.parts):
+            continue
+        if len(rel.parts) == 1 and FLOWGATE_DOC.fullmatch(rel.name):
             continue
         if rel.name in IGNORED_NAMES:
             continue

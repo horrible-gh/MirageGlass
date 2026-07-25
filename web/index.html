@@ -6,43 +6,116 @@
 <title>MirageGlass</title>
 <style>
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; font-family: system-ui, "Segoe UI", sans-serif; }
-  #app { --rail-w: 232px; display: flex; height: 100%; }
-  #rail { width: var(--rail-w); flex: none; border-right: 1px solid #e3e3e6; overflow-y: auto; background: #fafafb; }
+  html, body { height: 100%; margin: 0; font-family: system-ui, "Segoe UI", sans-serif; color: #202124; }
+  button, select { font: inherit; }
+  #app { --rail-w: 260px; display: flex; height: 100%; background: #f4f5f7; }
+  #rail { width: var(--rail-w); flex: none; border-right: 1px solid #dfe1e5; overflow-y: auto; background: #fafafb; transition: width 160ms ease; }
   #app.rail-hidden #rail { width: 0; border-right: 0; overflow: hidden; }
-  #rail .item { padding: 10px; cursor: pointer; border-bottom: 1px solid #ededf0; }
-  #rail .item.active { background: #e8f0fe; }
-  #rail .thumb { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top;
-                 border: 1px solid #dcdce0; background: #fff; display: block; }
-  #rail .card { width: 100%; aspect-ratio: 16 / 10; border: 1px solid #dcdce0; background: #fff;
-                display: flex; align-items: center; justify-content: center; color: #9a9aa2; font-size: 22px; }
-  #rail .name { margin-top: 6px; font-size: 12px; line-height: 1.35; word-break: break-all; }
-  #rail .date { font-size: 11px; color: #8a8a92; }
+  .rail-heading { position: sticky; top: 0; z-index: 1; padding: 10px 12px; border-bottom: 1px solid #e8eaed;
+                  background: rgba(250, 250, 251, .96); color: #6f7278; font-size: 11px; font-weight: 700;
+                  letter-spacing: 0; text-transform: uppercase; }
+  .deck-item { padding: 10px; cursor: pointer; border-bottom: 1px solid #ededf0; }
+  .deck-item:hover { background: #f1f4fa; }
+  .deck-item.active { background: #e8f0fe; box-shadow: inset 3px 0 #1a73e8; }
+  .thumb { width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top;
+           border: 1px solid #dcdce0; border-radius: 4px; background: #fff; display: block; }
+  .card { width: 100%; aspect-ratio: 16 / 10; border: 1px solid #dcdce0; border-radius: 4px; background: #fff;
+          display: flex; align-items: center; justify-content: center; color: #9a9aa2; font-size: 22px; }
+  .name { margin-top: 6px; font-size: 12px; font-weight: 600; line-height: 1.35; word-break: break-all; }
+  .date { margin-top: 2px; font-size: 11px; color: #8a8a92; }
+  #version-section[hidden] { display: none; }
+  #version-section { border-top: 1px solid #dfe1e5; }
+  .version-card { margin: 8px 10px; padding: 9px; border: 1px solid #dfe1e5; border-radius: 6px; background: #fff; }
+  .version-line { display: flex; align-items: center; gap: 5px; min-width: 0; }
+  .version-number { font-size: 12px; font-weight: 700; }
+  .version-position { margin-left: auto; color: #858890; font-size: 10px; }
+  .version-meta { margin-top: 5px; color: #777b82; font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+  .badge { display: inline-flex; align-items: center; min-height: 17px; padding: 1px 5px; border-radius: 999px;
+           background: #eef0f3; color: #64676d; font-size: 9px; font-weight: 700; text-transform: uppercase; }
+  .badge.active { background: #d9f2e3; color: #137333; }
+  .badge.latest { background: #e8f0fe; color: #1967d2; }
+  .status-ready { color: #137333; }
+  .status-failed { color: #b3261e; }
   #stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  #bar { height: 40px; flex: none; display: flex; align-items: center; gap: 12px;
-         padding: 0 12px; border-bottom: 1px solid #e3e3e6; font-size: 13px; }
-  #bar .title { font-weight: 600; }
-  #bar button { font-size: 12px; padding: 3px 8px; }
-  #rail-toggle { width: 32px; line-height: 1.2; }
-  #frame { flex: 1; border: 0; width: 100%; }
-  .empty { padding: 24px; color: #8a8a92; }
+  #bar { min-height: 48px; flex: none; display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+         border-bottom: 1px solid #dfe1e5; background: #fff; font-size: 13px; }
+  #bar .title { min-width: 0; overflow: hidden; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+  #bar button { padding: 5px 9px; border: 1px solid #c7c9cd; border-radius: 5px; background: #fff; color: #3c4043; cursor: pointer; font-size: 12px; }
+  #bar button:hover { background: #f5f6f7; }
+  #rail-toggle { width: 34px; flex: none; line-height: 1.2; }
+  #mode-switch { display: flex; margin-left: auto; }
+  #mode-switch button { border-radius: 0; }
+  #mode-switch button:first-child { border-radius: 5px 0 0 5px; }
+  #mode-switch button:last-child { margin-left: -1px; border-radius: 0 5px 5px 0; }
+  #mode-switch button[aria-pressed="true"] { position: relative; border-color: #1a73e8; background: #e8f0fe; color: #174ea6; }
+  #copy[hidden], #mode-switch[hidden], #compare-controls[hidden] { display: none; }
+  #compare-controls { min-height: 48px; flex: none; display: flex; align-items: center; justify-content: center; gap: 10px;
+                      padding: 7px 12px; border-bottom: 1px solid #dfe1e5; background: #fafafb; font-size: 12px; }
+  #compare-controls label { display: flex; align-items: center; gap: 6px; font-weight: 650; }
+  #compare-controls select { min-width: 108px; padding: 5px 24px 5px 7px; border: 1px solid #bdc1c6; border-radius: 5px; background: #fff; }
+  #swap { padding: 5px 8px; border: 1px solid #bdc1c6; border-radius: 5px; background: #fff; cursor: pointer; }
+  #viewer { flex: 1; display: flex; min-height: 0; gap: 1px; background: #c8cbd0; }
+  .pane { position: relative; flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; background: #fff; }
+  .pane-label { display: none; min-height: 30px; flex: none; align-items: center; justify-content: center;
+                border-bottom: 1px solid #e3e5e8; background: #f8f9fa; color: #656970; font-size: 11px; font-weight: 700; }
+  #viewer.compare .pane-label { display: flex; }
+  #viewer:not(.compare) #pane-b { display: none; }
+  iframe { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }
+  .empty { padding: 24px; color: #8a8a92; font-size: 12px; }
+  @media (max-width: 760px) {
+    #app { --rail-w: 210px; }
+    #bar { gap: 6px; }
+    #copy { display: none; }
+    #compare-controls { justify-content: flex-start; overflow-x: auto; }
+  }
 </style>
 </head>
 <body>
 <div id="app">
-  <aside id="rail"><div class="empty">Loading…</div></aside>
+  <aside id="rail">
+    <div class="rail-heading">Decks</div>
+    <div id="deck-list"><div class="empty">Loading...</div></div>
+    <section id="version-section" hidden>
+      <div class="rail-heading">Version history</div>
+      <div id="version-list"></div>
+    </section>
+  </aside>
   <main id="stage">
-    <div id="bar"><button id="rail-toggle" aria-expanded="true" aria-controls="rail"
-        aria-label="Toggle deck list" title="Hide deck list">&#9776;</button>
+    <div id="bar">
+      <button id="rail-toggle" aria-expanded="true" aria-controls="rail" aria-label="Toggle deck list" title="Hide deck list">&#9776;</button>
       <span class="title">MirageGlass</span>
-      <button id="copy" hidden>Copy link</button></div>
-    <iframe id="frame" title="Deck"></iframe>
+      <div id="mode-switch" hidden aria-label="Viewer mode">
+        <button type="button" data-mode="single" aria-pressed="true">Active</button>
+        <button type="button" data-mode="compare" aria-pressed="false">Compare</button>
+      </div>
+      <button id="copy" type="button" hidden>Copy link</button>
+    </div>
+    <div id="compare-controls" hidden>
+      <label>Version A <select id="version-a" aria-label="Version A"></select></label>
+      <button id="swap" type="button" title="Swap compared versions" aria-label="Swap compared versions">&#8646;</button>
+      <label>Version B <select id="version-b" aria-label="Version B"></select></label>
+    </div>
+    <div id="viewer">
+      <section class="pane" id="pane-a">
+        <div class="pane-label" id="label-a">Version A</div>
+        <iframe id="frame-a" title="Deck"></iframe>
+      </section>
+      <section class="pane" id="pane-b">
+        <div class="pane-label" id="label-b">Version B</div>
+        <iframe id="frame-b" title="Deck comparison"></iframe>
+      </section>
+    </div>
   </main>
 </div>
 <script>
-// Left rail = list of uploaded decks (newest first). Clicking one loads it into the iframe on the right.
+// The stable active viewer and the read-only version comparison view share this page.
 let decks = [];
 let currentId = null;
+let versionData = null;
+let mode = 'single';
+let versionA = null;
+let versionB = null;
+const initialMode = new URLSearchParams(location.search).get('mode');
 
 function applyRail(hidden) {
   document.getElementById('app').classList.toggle('rail-hidden', hidden);
@@ -69,51 +142,182 @@ document.getElementById('rail-toggle').onclick = () => {
   }
 };
 
-// A deck name is a string chosen by the uploader. Never drop it into innerHTML as-is.
+// Deck names and API strings must be escaped before any innerHTML insertion.
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function render() {
-  const rail = document.getElementById('rail');
-  if (!decks.length) { rail.innerHTML = '<div class="empty">No decks registered yet.</div>'; return; }
-  rail.innerHTML = '';
-  decks.forEach((deck, i) => {
+function renderDecks() {
+  const list = document.getElementById('deck-list');
+  if (!decks.length) {
+    list.innerHTML = '<div class="empty">No decks registered yet.</div>';
+    return;
+  }
+  list.innerHTML = '';
+  decks.forEach((deck, index) => {
     const item = document.createElement('div');
-    item.className = 'item' + (deck.id === currentId ? ' active' : '');
+    item.className = 'deck-item' + (deck.id === currentId ? ' active' : '');
     const preview = deck.thumb_url
-      ? `<img class="thumb" src="${esc(deck.thumb_url)}" alt="">`     // capture succeeded
-      : `<div class="card">${String(i + 1).padStart(2, '0')}</div>`;  // fallback numbered card on failure
+      ? `<img class="thumb" src="${esc(deck.thumb_url)}" alt="">`
+      : `<div class="card">${String(index + 1).padStart(2, '0')}</div>`;
     item.innerHTML = preview
       + `<div class="name">${esc(deck.name)}</div>`
       + `<div class="date">${esc(deck.created_at)}</div>`;
-    item.onclick = () => select(deck.id);
-    rail.appendChild(item);
+    item.onclick = () => selectDeck(deck.id);
+    list.appendChild(item);
   });
 }
 
-function select(id) {
-  const deck = decks.find(d => d.id === id);
+function renderVersions(errorMessage) {
+  const section = document.getElementById('version-section');
+  const list = document.getElementById('version-list');
+  section.hidden = !currentId;
+  if (!currentId) return;
+  if (errorMessage) {
+    list.innerHTML = `<div class="empty">${esc(errorMessage)}</div>`;
+    return;
+  }
+  if (!versionData) {
+    list.innerHTML = '<div class="empty">Loading versions...</div>';
+    return;
+  }
+  if (!versionData.items.length) {
+    list.innerHTML = '<div class="empty">No versions found.</div>';
+    return;
+  }
+  list.innerHTML = versionData.items.map(item => {
+    const active = item.is_active ? '<span class="badge active">Active</span>' : '';
+    const latest = item.version === versionData.latest_version ? '<span class="badge latest">Latest</span>' : '';
+    return `<div class="version-card">
+      <div class="version-line"><span class="version-number">v${esc(item.version)}</span>${active}${latest}
+        <span class="version-position">${esc(item.version)} / ${esc(versionData.latest_version)}</span></div>
+      <div class="version-meta"><span class="status-${esc(item.status)}">${esc(item.status)}</span> - ${esc(item.created_at)}</div>
+    </div>`;
+  }).join('');
+}
+
+function readyVersions() {
+  return versionData ? versionData.items.filter(item => item.status === 'ready') : [];
+}
+
+function versionUrl(version) {
+  return '/v/' + encodeURIComponent(currentId) + '/v' + encodeURIComponent(version) + '/';
+}
+
+function setCompareSources() {
+  if (versionA == null || versionB == null) return;
+  document.getElementById('frame-a').src = versionUrl(versionA);
+  document.getElementById('frame-b').src = versionUrl(versionB);
+  document.getElementById('label-a').textContent = 'Version A - v' + versionA;
+  document.getElementById('label-b').textContent = 'Version B - v' + versionB;
+}
+
+function renderVersionControls() {
+  const ready = readyVersions();
+  const controls = document.getElementById('compare-controls');
+  const selectA = document.getElementById('version-a');
+  const selectB = document.getElementById('version-b');
+  const options = ready.map(item => {
+    const suffix = item.is_active ? ' (active)' : '';
+    return `<option value="${esc(item.version)}">v${esc(item.version)}${esc(suffix)}</option>`;
+  }).join('');
+  selectA.innerHTML = options;
+  selectB.innerHTML = options;
+  if (versionA != null) selectA.value = String(versionA);
+  if (versionB != null) selectB.value = String(versionB);
+  controls.hidden = mode !== 'compare' || !ready.length;
+}
+
+function setMode(nextMode) {
+  mode = nextMode;
+  document.querySelectorAll('#mode-switch button').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
+  });
+  document.getElementById('viewer').classList.toggle('compare', mode === 'compare');
+  renderVersionControls();
+  if (mode === 'compare') {
+    setCompareSources();
+  } else {
+    const deck = decks.find(item => item.id === currentId);
+    if (deck) document.getElementById('frame-a').src = deck.viewer_url;
+  }
+}
+
+async function selectDeck(id) {
+  const deck = decks.find(item => item.id === id);
   if (!deck) return;
   currentId = id;
-  document.getElementById('frame').src = deck.viewer_url;
+  versionData = null;
+  versionA = null;
+  versionB = null;
   document.querySelector('#bar .title').textContent = deck.name;
   document.getElementById('copy').hidden = false;
+  document.getElementById('mode-switch').hidden = false;
+  document.getElementById('frame-a').src = deck.viewer_url;
+  document.getElementById('frame-b').removeAttribute('src');
   location.hash = id;
-  render();
+  setMode('single');
+  renderDecks();
+  renderVersions();
+
+  try {
+    const response = await fetch('/api/v1/decks/' + encodeURIComponent(id) + '/versions');
+    if (!response.ok) throw new Error('Version history is unavailable.');
+    const data = await response.json();
+    if (currentId !== id) return;
+    versionData = { ...data, items: data.items || [] };
+    const ready = readyVersions();
+    if (ready.length) {
+      const activeIndex = Math.max(0, ready.findIndex(item => item.is_active));
+      versionB = ready[activeIndex].version;
+      versionA = ready[Math.max(0, activeIndex - 1)].version;
+    }
+    renderVersions();
+    if (initialMode === 'compare') {
+      setMode('compare');
+    } else {
+      renderVersionControls();
+    }
+  } catch (error) {
+    if (currentId === id) renderVersions(error.message || 'Version history is unavailable.');
+  }
 }
+
+document.querySelectorAll('#mode-switch button').forEach(button => {
+  button.onclick = () => setMode(button.dataset.mode);
+});
+
+document.getElementById('version-a').onchange = event => {
+  versionA = Number(event.target.value);
+  setCompareSources();
+};
+
+document.getElementById('version-b').onchange = event => {
+  versionB = Number(event.target.value);
+  setCompareSources();
+};
+
+document.getElementById('swap').onclick = () => {
+  const previousA = versionA;
+  versionA = versionB;
+  versionB = previousA;
+  renderVersionControls();
+  setCompareSources();
+};
 
 document.getElementById('copy').onclick = () => {
   navigator.clipboard.writeText(location.origin + '/v/' + currentId + '/');
 };
 
-fetch('/api/v1/decks').then(r => r.json()).then(data => {
+fetch('/api/v1/decks').then(response => response.json()).then(data => {
   decks = data.items || [];
-  render();
+  renderDecks();
   const wanted = location.hash.slice(1);
-  const first = decks.find(d => d.id === wanted) || decks[0];
-  if (first) select(first.id);
+  const first = decks.find(deck => deck.id === wanted) || decks[0];
+  if (first) selectDeck(first.id);
+}).catch(() => {
+  document.getElementById('deck-list').innerHTML = '<div class="empty">Deck list is unavailable.</div>';
 });
 </script>
 </body>

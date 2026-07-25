@@ -1,8 +1,8 @@
 # MirageGlass v0
 
-One zip = one deck. The entry point is a single `index.html` at the zip root.
-No versioning, no overwrite; listings are newest first, and the API is the primary
-way to register a deck.
+One zip upload = one deck version. The entry point is a single `index.html` at the zip root.
+A deck keeps a stable viewer link while uploads add version history; listings are newest first,
+and the API is the primary way to register a deck or add a version.
 
 The full loop — register, list, view, thumbnail, delete — has been exercised against a
 running server. The versions in `requirements.txt` are the combination that passed it.
@@ -13,14 +13,14 @@ running server. The versions in `requirements.txt` are the combination that pass
 server/
   main.py            FastAPI app, database.init() in the lifespan
   config.py          Settings (environment variables) + database_init() wiring
-  api.py             POST/GET/DELETE /api/v1/decks, /api/v1/help, /v/{id}/..., /thumbs/{id}.png
+  api.py             deck/version APIs, help, active and version-scoped viewers, thumbnails
   repository.py      decks table access (sqloader fetch_one/fetch_all/execute)
   storage.py         zip validation, extraction, static path resolution
   thumbnail.py       Playwright capture (registration still succeeds if it fails)
   sql/
     queries/queries.json            decks.* query keys
     migrations/sqlite/001_create_decks.sql
-web/index.html       left rail (deck list) + right-hand iframe
+web/index.html       deck/version rail + active viewer and side-by-side comparison
 requirements.txt
 .env.example
 ```
@@ -87,27 +87,31 @@ Response codes: `201` new / `200` idempotent replay / `400` bad input or rejecte
 
 ## Editing a deck
 
-Download a ready deck, edit the extracted files, delete the old deck, and register a new zip.
-The download and file manifest are read operations and do not require authentication.
+Download a ready version, edit the extracted files, then upload it as the next version of the
+same deck. Downloads and file manifests are read operations and do not require authentication.
 
 ```bash
-curl -o deck.zip http://127.0.0.1:8100/api/v1/decks/$DECK_ID/download
-curl http://127.0.0.1:8100/api/v1/decks/$DECK_ID/files
+curl -o deck.zip "http://127.0.0.1:8100/api/v1/decks/$DECK_ID/download?version=1"
+curl "http://127.0.0.1:8100/api/v1/decks/$DECK_ID/files?version=1"
+curl -X POST "http://127.0.0.1:8100/api/v1/decks/$DECK_ID/versions" \
+  -H "Authorization: Bearer $MIRAGEGLASS_TOKEN" \
+  -F "file=@deck.zip" \
+  -F "idempotency_key=build-2026-07-22-02"
 ```
 
 The downloaded archive has `index.html` at its root and can be posted back without changing its
-layout. It is rebuilt from `storage/decks/{id}/src`, so it is not a byte-for-byte copy of the
-original upload. Since overwrite is not supported, re-registering creates a new deck id and
-viewer URL; use a new `idempotency_key` for the edited upload.
+layout. It is rebuilt from `storage/decks/{id}/versions/{n}/src`, so it is not a byte-for-byte
+copy of the original upload. Each version can be viewed without changing the active link at
+`/v/{id}/v{n}/`; the web UI uses these paths for side-by-side comparison.
 
 ## Storage layout
 
 ```
 storage/
   mirageglass.db
-  decks/{id}/src/index.html   <- exactly as extracted from the zip
-  decks/{id}/thumb.png
-  tmp/                        <- workspace for validation and extraction; only what passes moves into decks/
+  decks/{id}/versions/{n}/src/index.html   <- exactly as extracted from the zip
+  decks/{id}/versions/{n}/thumb.png
+  tmp/                                      <- validation and extraction workspace
 ```
 
 ## Notes
@@ -116,8 +120,8 @@ storage/
 - The install and import name is `sqloader`; the upstream repository is `py_sqloader`.
 - Your system Python may already have 0.2.15 installed. In 0.2.15 the `sqloader.init` import
   fails, so create a separate virtual environment and install from `requirements.txt`.
-- `/v/{id}` answers with a 307 redirect to `/v/{id}/`. Without the trailing slash, relative paths
-  inside the deck break.
+- `/v/{id}` and `/v/{id}/v{n}` answer with 307 redirects to their trailing-slash forms. Without
+  the trailing slash, relative paths inside the deck break.
 - If the console code page is not UTF-8 (cp932, cp949, ...), `curl.exe -F` with a non-ASCII value
   in `name` arrives mangled or as `?`. That is a client-side problem, not a server one. Automated
   registration scripts have to send UTF-8.

@@ -403,7 +403,8 @@ def help_document():
             "2) POST /api/v1/decks/{id}/versions to add a new version to the same deck (multipart: file, idempotency_key); the shared /v/{id}/ link keeps working and starts serving the new version",
             "3) GET /api/v1/decks/{id}/download?version=n to retrieve a version's source zip before editing it",
             "4) GET /api/v1/decks/{id}/versions to list every version and see which one is active",
-            "5) POST /api/v1/decks/{id}/versions/{n}/activate to roll the active version back to an earlier one",
+            "5) GET /v/{id}/v{n}/ to render a specific ready version without changing the active shared link",
+            "6) POST /api/v1/decks/{id}/versions/{n}/activate to roll the active version back to an earlier one",
         ],
         "endpoints": [
             {
@@ -480,6 +481,12 @@ def help_document():
             },
             {
                 "method": "GET",
+                "path": "/v/{deck_id}/v{version_no}/",
+                "auth": False,
+                "description": "Read-only viewer for a specific ready version. Without the trailing slash you get a 307 redirect. Returns 404 if the deck or version is missing and 409 if the version is not ready.",
+            },
+            {
+                "method": "GET",
                 "path": "/thumbs/{deck_id}.png",
                 "auth": False,
                 "description": "Thumbnail PNG of the active version. 404 for decks whose active capture is missing.",
@@ -528,7 +535,7 @@ def help_document():
             "A registration that ended as failed is retried from scratch under the same idempotency_key: the leftovers are cleaned up first.",
             "A downloaded zip is rebuilt from the stored source rather than copied byte-for-byte from the upload. Re-registering it through POST /api/v1/decks creates a new deck id and viewer URL; use POST .../versions to keep the same link.",
             "The deck name does not change when you upload a new version. name is a deck attribute; a version upload sends only file and idempotency_key, and any name field is ignored.",
-            "/v/{id}/ and /thumbs/{id}.png always serve the deck's active version. There is no version parameter on those paths - the shared link is stable by design.",
+            "/v/{id}/ and /thumbs/{id}.png always serve the deck's active version, so the shared links stay stable. Use the separate /v/{id}/v{n}/ path to view a specific ready version without changing the active pointer.",
             "A failed version upload leaves the active version untouched: the shared link keeps serving whatever was ready before.",
             "?version=n is read only. It works on /download and /files; the only way to change the active version is POST .../versions/{n}/activate.",
         ],
@@ -539,6 +546,26 @@ def help_document():
 def view_root_redirect(deck_id: str):
     # Always end with a slash so relative asset paths keep working.
     return RedirectResponse(url=f"/v/{deck_id}/")
+
+
+@public_router.get("/v/{deck_id}/v{version_no}")
+def view_version_root_redirect(deck_id: str, version_no: int):
+    # Version-scoped viewers follow the same trailing-slash rule as stable links.
+    return RedirectResponse(url=f"/v/{deck_id}/v{version_no}/")
+
+
+@public_router.get("/v/{deck_id}/v{version_no}/{asset_path:path}")
+def view_version_asset(
+    deck_id: str,
+    version_no: int,
+    asset_path: str = "",
+    repo: DeckRepository = Depends(get_repo),
+):
+    target_version = _resolve_read_version(repo, deck_id, version_no)
+    target = storage.resolve_asset(settings, deck_id, target_version, asset_path)
+    if target is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(target)
 
 
 @public_router.get("/v/{deck_id}/{asset_path:path}")

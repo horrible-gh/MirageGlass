@@ -159,6 +159,53 @@ def test_read_specific_version(app_client, auth_headers):
     assert app_client.get(f"/api/v1/decks/{deck_id}/files?version=99").status_code == 404
 
 
+def test_version_scoped_view_renders_each_ready_version(app_client, auth_headers):
+    deck = _create_deck(app_client, auth_headers, "version one", "ver-view")
+    deck_id = deck["id"]
+    added = _add_version(
+        app_client,
+        auth_headers,
+        deck_id,
+        "version two",
+        "ver-view-2",
+        **{"assets/marker.txt": "v2 asset"},
+    )
+    assert added.status_code == 201, added.text
+
+    v1 = app_client.get(f"/v/{deck_id}/v1/")
+    v2 = app_client.get(f"/v/{deck_id}/v2/")
+    assert v1.status_code == 200
+    assert v2.status_code == 200
+    assert "version one" in v1.text
+    assert "version two" in v2.text
+    assert v1.text != v2.text
+    assert app_client.get(f"/v/{deck_id}/v2/assets/marker.txt").text == "v2 asset"
+
+    # The stable link still follows the active version.
+    stable = app_client.get(f"/v/{deck_id}/")
+    assert stable.status_code == 200
+    assert "version two" in stable.text
+
+
+def test_version_scoped_view_redirect_and_failure_cases(app_client, auth_headers):
+    deck = _create_deck(app_client, auth_headers, "ready", "ver-view-errors")
+    deck_id = deck["id"]
+
+    redirect = app_client.get(f"/v/{deck_id}/v1", follow_redirects=False)
+    assert redirect.status_code == 307
+    assert redirect.headers["location"] == f"/v/{deck_id}/v1/"
+    assert app_client.get("/v/zzzzzzzz/v1/").status_code == 404
+    assert app_client.get(f"/v/{deck_id}/v99/").status_code == 404
+
+    rejected = app_client.post(
+        f"/api/v1/decks/{deck_id}/versions",
+        headers=auth_headers,
+        files=_files(make_zip({"sub/index.html": "<html></html>"})),
+        data={"idempotency_key": "ver-view-errors-2"},
+    )
+    assert rejected.status_code == 400
+    assert app_client.get(f"/v/{deck_id}/v2/").status_code == 409
+
 def test_rollback_activates_an_earlier_version(app_client, auth_headers):
     deck = _create_deck(app_client, auth_headers, "page one", "ver-roll")
     deck_id = deck["id"]

@@ -39,9 +39,9 @@ def test_help_requires_no_auth(app_client):
 
 def test_help_top_level_shape(help_doc):
     assert TOP_LEVEL_KEYS <= set(help_doc)
-    assert len(help_doc["workflow"]) == 5
+    assert len(help_doc["workflow"]) == 6
     assert len(help_doc["gotchas"]) == 9
-    assert len(help_doc["endpoints"]) == 13
+    assert len(help_doc["endpoints"]) == 14
 
 
 def test_help_auth_block_lists_the_protected_endpoints(help_doc):

@@ -1,57 +1,43 @@
-# MirageGlass v0
+# MirageGlass
 
-One zip upload = one deck version. The entry point is a single `index.html` at the zip root.
-A deck keeps a stable viewer link while uploads add version history; listings are newest first,
-and the API is the primary way to register a deck or add a version.
+MirageGlass is a self-hosted viewer and version manager for HTML presentation decks. Each upload is a ZIP archive with a single `index.html` at its root. A deck keeps one stable viewer URL while new uploads build its version history.
 
-The full loop — register, list, view, thumbnail, delete — has been exercised against a
-running server. The versions in `requirements.txt` are the combination that passed it.
+![MirageGlass dashboard](assets/images/MirageGlass.png)
 
-## Layout
+## What it provides
 
-```
-server/
-  main.py            FastAPI app, database.init() in the lifespan
-  config.py          Settings (environment variables) + database_init() wiring
-  api.py             deck/version APIs, help, active and version-scoped viewers, thumbnails
-  repository.py      decks table access (sqloader fetch_one/fetch_all/execute)
-  storage.py         zip validation, extraction, static path resolution
-  thumbnail.py       Playwright capture (registration still succeeds if it fails)
-  sql/
-    queries/queries.json            decks.* query keys
-    migrations/sqlite/001_create_decks.sql
-web/index.html       deck/version rail + active viewer and side-by-side comparison
-requirements.txt
-.env.example
-```
+- Registration and version uploads through a token-protected API
+- Stable active-viewer links and version-specific viewer links
+- Downloadable deck archives and file manifests
+- Automatic thumbnails, with registration remaining available if capture fails
+- A browser dashboard for browsing versions and comparing two versions side by side
+- Idempotency keys for safe registration and upload retries
 
-## Running
+## Quick start
 
 ```bash
 pip install -r requirements.txt
 python -m playwright install chromium
-cp .env.example .env      # set MIRAGEGLASS_TOKEN
+cp .env.example .env
+# Set MIRAGEGLASS_TOKEN in .env.
 uvicorn server.main:app --port 8100
 ```
 
-`storage/` is created automatically on first start, and migrations are applied through
-`auto_migration: true`.
-`server/config.py` reads `.env` at start-up via `load_dotenv()`. Environment variables that
-are already exported take precedence over `.env` (`override=False`).
+MirageGlass creates `storage/` on first start and applies database migrations automatically through `auto_migration: true`.
+
+`server/config.py` loads `.env` with `load_dotenv()`. Variables already exported in the environment take precedence because dotenv loading uses `override=False`.
 
 ## Looking up the usage guide
 
-```
-GET /api/v1/help     # no auth. Returns the endpoint list, the procedure and the gotchas as JSON
+```text
+GET /api/v1/help
 ```
 
-An automation agent can call this instead of hunting for the README. `/docs` (OpenAPI) is the
-schema; `/api/v1/help` is the "do X, then Y" part.
+This unauthenticated endpoint returns the available endpoints, recommended workflow, and common gotchas as JSON. Use `/docs` for the OpenAPI schema and `/api/v1/help` for task-oriented instructions.
 
 ## Registering a deck
 
-Multipart fields **must be sent as UTF-8.** Use `requests` so the result does not depend on the
-console code page.
+Multipart fields **must be sent as UTF-8**. For automation, use `requests` so behavior does not depend on the console code page.
 
 ```python
 import requests
@@ -63,11 +49,12 @@ r = requests.post(
     data={"name": "Main landing deck", "idempotency_key": "build-2026-07-22-01"},
 )
 r.raise_for_status()
-print(r.status_code, r.json()["id"])   # 201 new / 200 idempotent replay
+print(r.status_code, r.json()["id"])
 ```
 
-When checking things with curl, either keep the name ASCII-only or make sure the console is
-really running in UTF-8 first.
+A new registration returns `201`. Reusing the same `idempotency_key` returns the existing deck with `200` instead of creating a duplicate. If the earlier attempt ended with `failed`, MirageGlass cleans up its leftovers and processes the upload again under the same key.
+
+For manual checks with curl, keep the name ASCII-only unless the console is confirmed to use UTF-8:
 
 ```bash
 curl -X POST http://127.0.0.1:8100/api/v1/decks \
@@ -77,18 +64,11 @@ curl -X POST http://127.0.0.1:8100/api/v1/decks \
   -F "idempotency_key=build-2026-07-22-01"
 ```
 
-Firing the same `idempotency_key` again does not create a second deck; it returns the existing
-one with **200** (a new registration is 201). One exception: if the previous registration under
-that key ended as `failed`, the leftovers are cleaned up and the upload is processed again —
-you have to be able to fix the zip and retry with the same key.
+Common response codes are `201` for a new deck, `200` for an idempotent replay, `400` for invalid input or a rejected archive, `401` for a missing or invalid token, `404` for a missing resource, and `500` for a processing failure.
 
-Response codes: `201` new / `200` idempotent replay / `400` bad input or rejected zip /
-`401` token / `404` not found / `500` processing failure.
+## Editing and versioning a deck
 
-## Editing a deck
-
-Download a ready version, edit the extracted files, then upload it as the next version of the
-same deck. Downloads and file manifests are read operations and do not require authentication.
+Download a ready version, edit the extracted files, rebuild the ZIP with `index.html` at its root, and upload it as a new version of the same deck. Downloads and file manifests are read operations and do not require authentication.
 
 ```bash
 curl -o deck.zip "http://127.0.0.1:8100/api/v1/decks/$DECK_ID/download?version=1"
@@ -99,29 +79,41 @@ curl -X POST "http://127.0.0.1:8100/api/v1/decks/$DECK_ID/versions" \
   -F "idempotency_key=build-2026-07-22-02"
 ```
 
-The downloaded archive has `index.html` at its root and can be posted back without changing its
-layout. It is rebuilt from `storage/decks/{id}/versions/{n}/src`, so it is not a byte-for-byte
-copy of the original upload. Each version can be viewed without changing the active link at
-`/v/{id}/v{n}/`; the web UI uses these paths for side-by-side comparison.
+The downloaded archive is rebuilt from `storage/decks/{id}/versions/{n}/src`; it is not a byte-for-byte copy of the original upload. Its layout is ready for immediate re-upload. Version-specific content is available at `/v/{id}/v{n}/`, while the stable active link continues to point at the selected deck version.
+
+## Project layout
+
+```text
+server/
+  main.py            FastAPI application and lifespan setup
+  config.py          Environment settings and database initialization
+  api.py             Deck, version, viewer, download, manifest, and help routes
+  repository.py      Database access through sqloader
+  storage.py         ZIP validation, extraction, and path resolution
+  thumbnail.py       Playwright thumbnail capture
+  sql/
+    queries/queries.json
+    migrations/sqlite/
+web/index.html       Deck dashboard and side-by-side comparison UI
+assets/images/       Documentation images
+requirements.txt     Runtime dependencies
+.env.example         Configuration template
+```
 
 ## Storage layout
 
-```
+```text
 storage/
   mirageglass.db
-  decks/{id}/versions/{n}/src/index.html   <- exactly as extracted from the zip
+  decks/{id}/versions/{n}/src/index.html
   decks/{id}/versions/{n}/thumb.png
-  tmp/                                      <- validation and extraction workspace
+  tmp/
 ```
 
-## Notes
+## Operational notes
 
-- The sqloader config key really is spelled `sqloder` (verbatim from the library, not a typo here).
-- The install and import name is `sqloader`; the upstream repository is `py_sqloader`.
-- Your system Python may already have 0.2.15 installed. In 0.2.15 the `sqloader.init` import
-  fails, so create a separate virtual environment and install from `requirements.txt`.
-- `/v/{id}` and `/v/{id}/v{n}` answer with 307 redirects to their trailing-slash forms. Without
-  the trailing slash, relative paths inside the deck break.
-- If the console code page is not UTF-8 (cp932, cp949, ...), `curl.exe -F` with a non-ASCII value
-  in `name` arrives mangled or as `?`. That is a client-side problem, not a server one. Automated
-  registration scripts have to send UTF-8.
+- The sqloader configuration key is spelled `sqloder`, matching the library.
+- The package and import name is `sqloader`; its upstream repository is `py_sqloader`.
+- Use an isolated virtual environment and install the versions in `requirements.txt`. The older `sqloader` 0.2.15 release has an incompatible `sqloader.init` import.
+- `/v/{id}` and `/v/{id}/v{n}` redirect with `307` to their trailing-slash forms. The trailing slash is required for relative deck assets to resolve correctly.
+- On consoles using cp932, cp949, or another non-UTF-8 code page, `curl.exe -F` can corrupt non-ASCII deck names. This is a client encoding issue; automated registration should send UTF-8 multipart fields.

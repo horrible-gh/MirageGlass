@@ -11,6 +11,7 @@ MirageGlass is a self-hosted viewer and version manager for HTML presentation de
 - Downloadable deck archives and file manifests
 - Automatic thumbnails, with registration remaining available if capture fails
 - A browser dashboard for browsing versions and comparing two versions side by side
+- Optional multi-screen decks (a `screens.json` manifest groups several screens under one deck) with a per-screen or deck-wide version timeline
 - Idempotency keys for safe registration and upload retries
 
 ## Quick start
@@ -80,6 +81,21 @@ curl -X POST "http://127.0.0.1:8100/api/v1/decks/$DECK_ID/versions" \
 ```
 
 The downloaded archive is rebuilt from `storage/decks/{id}/versions/{n}/src`; it is not a byte-for-byte copy of the original upload. Its layout is ready for immediate re-upload. Version-specific content is available at `/v/{id}/v{n}/`, while the stable active link continues to point at the selected deck version.
+
+## Multi-screen decks
+
+A zip may declare more than one screen by including a `screens.json` manifest at its root instead of relying on a single `index.html`:
+
+```json
+{
+  "screens": [
+    {"key": "overview", "tag": "Overview", "entry": "overview/index.html"},
+    {"key": "settings", "tag": "Settings", "entry": "settings/index.html"}
+  ]
+}
+```
+
+Each screen needs a unique `key` (used by the API), a display `tag` chosen by whoever registers the deck, and an `entry` file that must exist in the zip. A zip without `screens.json` keeps working exactly as before: one implicit screen named after the deck. `GET /api/v1/decks/{id}/screens` lists a version's screens, and `GET /api/v1/decks/{id}/screens/{key}/versions` returns that one screen's own change history, so two screens in the same deck can show different version counts even though every upload still versions the whole deck together. The console's rail shows a screen tree once a deck reports more than one screen, with a Deck/Screen switch choosing whether the version panel follows the deck's shared timeline or the selected screen's own.
 
 ## Project layout
 

@@ -9,6 +9,9 @@ downloads serve.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -23,6 +26,47 @@ def _reject(msg: str) -> None:
     raise ZipRejected(msg)
 
 
+# A zip may declare multiple screens via an optional screens.json manifest at its
+# root instead of a single index.html. Each entry names a screen key, its display
+# tag (chosen by the uploader at registration time - never fixed by this code) and
+# the entry file that serves it.
+MAX_SCREENS = 64
+_SCREEN_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _parse_screens_manifest(raw: str) -> list[dict]:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        _reject(f"screens.json is not valid JSON: {e}")
+
+    if not isinstance(data, dict) or not isinstance(data.get("screens"), list):
+        _reject("screens.json must be an object with a 'screens' array.")
+    screens = data["screens"]
+    if not screens:
+        _reject("screens.json must declare at least one screen.")
+    if len(screens) > MAX_SCREENS:
+        _reject("Too many screens declared in screens.json.")
+
+    seen_keys = set()
+    parsed = []
+    for item in screens:
+        if not isinstance(item, dict):
+            _reject("Each screens.json entry must be an object.")
+        key, tag, entry = item.get("key"), item.get("tag"), item.get("entry")
+        if not isinstance(key, str) or not _SCREEN_KEY_RE.fullmatch(key):
+            _reject(f"Invalid screen key: {key!r}")
+        if key in seen_keys:
+            _reject(f"Duplicate screen key: {key}")
+        seen_keys.add(key)
+        if not isinstance(tag, str) or not tag.strip():
+            _reject(f"Screen '{key}' is missing a tag.")
+        if not isinstance(entry, str) or not entry or entry.startswith("/") or ".." in Path(entry).parts:
+            _reject(f"Screen '{key}' has an invalid entry path.")
+        parsed.append({"key": key, "tag": tag.strip(), "entry": entry.replace("\\", "/")})
+    return parsed
+
+
 def _open_zip(zip_path: Path) -> zipfile.ZipFile:
     """A non-zip upload is an input error, not a server error (400)."""
     try:
@@ -31,8 +75,12 @@ def _open_zip(zip_path: Path) -> zipfile.ZipFile:
         raise ZipRejected("Not a zip file, or the archive is corrupted.")
 
 
-def inspect_zip(zip_path: Path, settings) -> None:
-    """Screen out zip bombs, path traversal and a missing entry point before extracting."""
+def inspect_zip(zip_path: Path, settings) -> Optional[list[dict]]:
+    """Screen out zip bombs, path traversal and a missing entry point before extracting.
+
+    Returns the parsed screens.json manifest when the zip declares one, or None for
+    a plain single-screen zip (the index.html-at-root case).
+    """
     if zip_path.stat().st_size > settings.max_zip_bytes:
         _reject("Zip size limit exceeded.")
 
@@ -43,6 +91,8 @@ def inspect_zip(zip_path: Path, settings) -> None:
 
         total = 0
         has_index = False
+        names = set()
+        manifest_raw = None
         for info in infos:
             name = info.filename.replace("\\", "/")
 
@@ -61,11 +111,25 @@ def inspect_zip(zip_path: Path, settings) -> None:
             if total > settings.max_total_bytes:
                 _reject("Total extracted size limit exceeded.")
 
+            names.add(name)
             if name == "index.html":
                 has_index = True
+            if name == "screens.json":
+                try:
+                    manifest_raw = zf.read(info).decode("utf-8")
+                except UnicodeDecodeError:
+                    _reject("screens.json must be UTF-8.")
 
-        if not has_index:
-            _reject("No index.html at the zip root.")
+        if manifest_raw is None:
+            if not has_index:
+                _reject("No index.html at the zip root.")
+            return None
+
+        screens = _parse_screens_manifest(manifest_raw)
+        for screen in screens:
+            if screen["entry"] not in names:
+                _reject(f"screens.json entry not found in the zip: {screen['entry']}")
+        return screens
 
 
 def extract_zip(zip_path: Path, dest: Path) -> None:
@@ -99,6 +163,21 @@ def version_src_dir(settings, deck_id: str, version_no: int) -> Path:
 
 def version_thumb_path(settings, deck_id: str, version_no: int) -> Path:
     return version_dir(settings, deck_id, version_no) / "thumb.png"
+
+
+def hash_file(path: Path) -> Optional[str]:
+    """SHA-256 of a file's bytes, or None if it is missing.
+
+    Used to collapse a screen's per-version history down to only the versions
+    where that screen's content actually changed.
+    """
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def resolve_asset(settings, deck_id: str, version_no: int, rel_path: str) -> Optional[Path]:

@@ -25,6 +25,10 @@
           display: flex; align-items: center; justify-content: center; color: #9a9aa2; font-size: 22px; }
   .name { margin-top: 6px; font-size: 12px; font-weight: 600; line-height: 1.35; word-break: break-all; }
   .date { margin-top: 2px; font-size: 11px; color: #8a8a92; }
+  .screen-tree { padding: 2px 0 6px; background: #eef1f6; border-bottom: 1px solid #ededf0; }
+  .screen-item { padding: 7px 10px 7px 26px; font-size: 12px; color: #45484d; cursor: pointer; border-left: 3px solid transparent; }
+  .screen-item:hover { background: #e3e7f0; }
+  .screen-item.active { background: #e8f0fe; color: #174ea6; font-weight: 650; border-left-color: #1a73e8; }
   #version-section[hidden] { display: none; }
   #version-section { border-top: 1px solid #dfe1e5; flex: none; max-height: 42%; min-height: 160px;
                      display: flex; flex-direction: column; overflow: hidden; }
@@ -55,12 +59,13 @@
   #bar button { padding: 5px 9px; border: 1px solid #c7c9cd; border-radius: 5px; background: #fff; color: #3c4043; cursor: pointer; font-size: 12px; }
   #bar button:hover { background: #f5f6f7; }
   #rail-toggle { width: 34px; flex: none; line-height: 1.2; }
-  #mode-switch { display: flex; margin-left: auto; }
-  #mode-switch button { border-radius: 0; }
-  #mode-switch button:first-child { border-radius: 5px 0 0 5px; }
-  #mode-switch button:last-child { margin-left: -1px; border-radius: 0 5px 5px 0; }
-  #mode-switch button[aria-pressed="true"] { position: relative; border-color: #1a73e8; background: #e8f0fe; color: #174ea6; }
-  #copy[hidden], #mode-switch[hidden], #compare-controls[hidden], #viewing-tag[hidden] { display: none; }
+  #mode-switch, #scope-switch { display: flex; }
+  #mode-switch { margin-left: auto; }
+  #mode-switch button, #scope-switch button { border-radius: 0; }
+  #mode-switch button:first-child, #scope-switch button:first-child { border-radius: 5px 0 0 5px; }
+  #mode-switch button:last-child, #scope-switch button:last-child { margin-left: -1px; border-radius: 0 5px 5px 0; }
+  #mode-switch button[aria-pressed="true"], #scope-switch button[aria-pressed="true"] { position: relative; border-color: #1a73e8; background: #e8f0fe; color: #174ea6; }
+  #copy[hidden], #mode-switch[hidden], #scope-switch[hidden], #compare-controls[hidden], #viewing-tag[hidden] { display: none; }
   #compare-controls { min-height: 48px; flex: none; display: flex; align-items: center; justify-content: center; gap: 10px;
                       padding: 7px 12px; border-bottom: 1px solid #dfe1e5; background: #fafafb; font-size: 12px; }
   #compare-controls label { display: flex; align-items: center; gap: 6px; font-weight: 650; }
@@ -97,6 +102,10 @@
       <button id="rail-toggle" aria-expanded="true" aria-controls="rail" aria-label="Toggle deck list" title="Hide deck list">&#9776;</button>
       <span class="title">MirageGlass</span>
       <span id="viewing-tag" class="viewing-tag" hidden></span>
+      <div id="scope-switch" hidden aria-label="Version scope">
+        <button type="button" data-scope="deck" aria-pressed="true">Deck</button>
+        <button type="button" data-scope="screen" aria-pressed="false">Screen</button>
+      </div>
       <div id="mode-switch" hidden aria-label="Viewer mode">
         <button type="button" data-mode="single" aria-pressed="true">Active</button>
         <button type="button" data-mode="compare" aria-pressed="false">Compare</button>
@@ -125,8 +134,15 @@
 // The single ("Active") pane also lets the reader open any past ready version from the
 // version-history rail; doing so never moves the deck's active pointer (compare is
 // untouched by this). viewingVersion tracks which version that single pane is showing.
+// A deck with more than one screen (registered with a screens.json manifest) adds a
+// rail tree of screens plus a Deck/Screen scope switch: Deck keeps today's deck-wide
+// timeline, Screen narrows the version panel to just the selected screen's own change
+// history (derived server-side, so two screens can show different counts).
 let decks = [];
 let currentId = null;
+let screens = [];
+let currentScreenKey = null;
+let scope = 'deck';
 let versionData = null;
 let mode = 'single';
 let versionA = null;
@@ -165,6 +181,18 @@ function esc(s) {
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// The API returns UTC ISO8601 timestamps; the console always displays them in a
+// fixed UTC+9 "YYYY-MM-DD HH:MM:SS" form, independent of the viewer's own locale
+// or system timezone.
+function formatTimestamp(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return String(iso == null ? '' : iso);
+  const shifted = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`
+    + ` ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}`;
+}
+
 function renderDecks() {
   const list = document.getElementById('deck-list');
   if (!decks.length) {
@@ -186,10 +214,28 @@ function renderDecks() {
       : '';
     item.innerHTML = preview
       + `<div class="name">${esc(deck.name)}</div>`
-      + `<div class="date">${esc(deck.created_at)}</div>`
+      + `<div class="date">${esc(formatTimestamp(deck.created_at))}</div>`
       + versionBadge;
     item.onclick = () => selectDeck(deck.id);
     list.appendChild(item);
+
+    // The screen tree nests directly under the selected deck, and only appears
+    // once that deck actually declares more than one screen (screens.json).
+    if (deck.id === currentId && screens.length > 1) {
+      const tree = document.createElement('div');
+      tree.className = 'screen-tree';
+      screens.forEach(screen => {
+        const row = document.createElement('div');
+        row.className = 'screen-item' + (screen.key === currentScreenKey ? ' active' : '');
+        row.textContent = screen.tag;
+        row.onclick = event => {
+          event.stopPropagation();
+          selectScreen(screen.key);
+        };
+        tree.appendChild(row);
+      });
+      list.appendChild(tree);
+    }
   });
 }
 
@@ -225,6 +271,7 @@ function renderVersions(errorMessage) {
   // The count signals at a glance how deep the history goes.
   setVersionHeading('Version history (' + versionData.items.length + ')');
   const active = activeVersionNo();
+  const totalLabel = versionData.items.length;
   list.innerHTML = '';
   // Newest first: the API returns ascending version_no, but the reader expects the
   // latest version at the top of the rail. Only the display order is reversed here;
@@ -240,9 +287,11 @@ function renderVersions(errorMessage) {
       + (viewing ? ' viewing' : '');
     const activeBadge = item.version === active ? '<span class="badge active">Active</span>' : '';
     const latestBadge = item.version === versionData.latest_version ? '<span class="badge latest">Latest</span>' : '';
-    card.innerHTML = `<div class="version-line"><span class="version-number">v${esc(item.version)}</span>${activeBadge}${latestBadge}
-        <span class="version-position">${esc(item.version)} / ${esc(versionData.latest_version)}</span></div>
-      <div class="version-meta"><span class="status-${esc(item.status)}">${esc(item.status)}</span> - ${esc(item.created_at)}</div>`;
+    // item.label is the number shown to the reader: the deck version_no in Deck
+    // scope, or the screen's own relabeled 1..N count in Screen scope.
+    card.innerHTML = `<div class="version-line"><span class="version-number">v${esc(item.label)}</span>${activeBadge}${latestBadge}
+        <span class="version-position">${esc(item.label)} / ${esc(totalLabel)}</span></div>
+      <div class="version-meta"><span class="status-${esc(item.status)}">${esc(item.status)}</span> - ${esc(formatTimestamp(item.created_at))}</div>`;
     if (selectable) {
       card.setAttribute('role', 'button');
       card.setAttribute('tabindex', '0');
@@ -263,8 +312,14 @@ function readyVersions() {
   return versionData ? versionData.items.filter(item => item.status === 'ready') : [];
 }
 
+// The current screen's /v/{id}/ sub-path ("" for the deck's root/"main" screen).
+function screenPath() {
+  const screen = screens.find(item => item.key === currentScreenKey);
+  return screen ? screen.viewer_path : '';
+}
+
 function versionUrl(version) {
-  return '/v/' + encodeURIComponent(currentId) + '/v' + encodeURIComponent(version) + '/';
+  return '/v/' + encodeURIComponent(currentId) + '/v' + encodeURIComponent(version) + '/' + screenPath();
 }
 
 // The single pane serves the active version through the stable /v/{id}/ link and any
@@ -272,14 +327,16 @@ function versionUrl(version) {
 function singleFrameUrl(version) {
   const deck = decks.find(item => item.id === currentId);
   if (version != null && version !== activeVersionNo()) return versionUrl(version);
-  return deck ? deck.viewer_url : '';
+  return deck ? deck.viewer_url + screenPath() : '';
 }
 
 function updateViewingTag() {
   const tag = document.getElementById('viewing-tag');
   const active = activeVersionNo();
   if (mode === 'single' && viewingVersion != null && viewingVersion !== active) {
-    tag.textContent = 'Viewing v' + viewingVersion + ' (not active)';
+    const item = versionData && versionData.items.find(entry => entry.version === viewingVersion);
+    const label = item ? item.label : viewingVersion;
+    tag.textContent = 'Viewing v' + label + ' (not active)';
     tag.hidden = false;
   } else {
     tag.hidden = true;
@@ -312,7 +369,7 @@ function renderVersionControls() {
   // leaves readyVersions() (and the selection logic that indexes it) untouched.
   const options = [...ready].reverse().map(item => {
     const suffix = item.is_active ? ' (active)' : '';
-    return `<option value="${esc(item.version)}">v${esc(item.version)}${esc(suffix)}</option>`;
+    return `<option value="${esc(item.version)}">v${esc(item.label)}${esc(suffix)}</option>`;
   }).join('');
   selectA.innerHTML = options;
   selectB.innerHTML = options;
@@ -335,17 +392,107 @@ function setMode(nextMode) {
     const deck = decks.find(item => item.id === currentId);
     if (deck) {
       viewingVersion = activeVersionNo();
-      document.getElementById('frame-a').src = deck.viewer_url;
+      document.getElementById('frame-a').src = deck.viewer_url + screenPath();
     }
   }
   renderVersions();
   updateViewingTag();
 }
 
+// Normalizes either the deck-wide /versions response or a screen-scoped
+// /screens/{key}/versions response into the same {items, active_version,
+// latest_version} shape the rest of the UI works with. In both cases item.version
+// stays in deck-version space (so viewVersion/versionUrl need no branching); only
+// item.label (the number shown to the reader) differs by scope.
+async function fetchVersionData(id) {
+  if (scope === 'screen' && currentScreenKey) {
+    const response = await fetch(
+      '/api/v1/decks/' + encodeURIComponent(id) + '/screens/'
+        + encodeURIComponent(currentScreenKey) + '/versions'
+    );
+    if (!response.ok) throw new Error('Version history is unavailable.');
+    const data = await response.json();
+    const items = (data.items || []).map(item => ({
+      version: item.deck_version,
+      label: item.version,
+      status: 'ready',
+      is_active: item.is_active,
+      created_at: item.created_at,
+    }));
+    const activeItem = items.find(item => item.is_active);
+    const latestItem = items[items.length - 1];
+    return {
+      items,
+      active_version: activeItem ? activeItem.version : null,
+      latest_version: latestItem ? latestItem.version : null,
+    };
+  }
+  const response = await fetch('/api/v1/decks/' + encodeURIComponent(id) + '/versions');
+  if (!response.ok) throw new Error('Version history is unavailable.');
+  const data = await response.json();
+  const items = (data.items || []).map(item => ({ ...item, label: item.version }));
+  return { items, active_version: data.active_version, latest_version: data.latest_version };
+}
+
+async function loadVersionData() {
+  const id = currentId;
+  versionData = null;
+  renderVersions();
+  try {
+    const data = await fetchVersionData(id);
+    if (currentId !== id) return;
+    versionData = data;
+    viewingVersion = versionData.active_version;
+    const ready = readyVersions();
+    if (ready.length) {
+      const activeIndex = Math.max(0, ready.findIndex(item => item.is_active));
+      versionB = ready[activeIndex].version;
+      versionA = ready[Math.max(0, activeIndex - 1)].version;
+    }
+    if (mode === 'compare') {
+      setCompareSources();
+    } else {
+      document.getElementById('frame-a').src = singleFrameUrl(viewingVersion);
+    }
+    renderVersions();
+    updateViewingTag();
+    renderVersionControls();
+    // The version section has its own scroll now; make sure it (and the newest card
+    // at its top) is in view on first load even if the deck list is very long.
+    document.getElementById('version-section').scrollIntoView({ block: 'nearest' });
+  } catch (error) {
+    if (currentId === id) renderVersions(error.message || 'Version history is unavailable.');
+  }
+}
+
+function setScope(nextScope) {
+  if (scope === nextScope) return;
+  scope = nextScope;
+  document.querySelectorAll('#scope-switch button').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.scope === scope));
+  });
+  loadVersionData();
+}
+
+function selectScreen(key) {
+  if (currentScreenKey === key) return;
+  currentScreenKey = key;
+  renderDecks();
+  if (mode === 'compare') {
+    setCompareSources();
+  } else {
+    document.getElementById('frame-a').src = singleFrameUrl(viewingVersion);
+  }
+  if (scope === 'screen') loadVersionData();
+}
+
 async function selectDeck(id) {
   const deck = decks.find(item => item.id === id);
   if (!deck) return;
   currentId = id;
+  screens = [];
+  currentScreenKey = null;
+  scope = 'deck';
   versionData = null;
   versionA = null;
   versionB = null;
@@ -353,6 +500,10 @@ async function selectDeck(id) {
   document.querySelector('#bar .title').textContent = deck.name;
   document.getElementById('copy').hidden = false;
   document.getElementById('mode-switch').hidden = false;
+  document.getElementById('scope-switch').hidden = true;
+  document.querySelectorAll('#scope-switch button').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.scope === scope));
+  });
   document.getElementById('frame-a').src = deck.viewer_url;
   document.getElementById('frame-b').removeAttribute('src');
   location.hash = id;
@@ -361,36 +512,29 @@ async function selectDeck(id) {
   renderVersions();
 
   try {
-    const response = await fetch('/api/v1/decks/' + encodeURIComponent(id) + '/versions');
-    if (!response.ok) throw new Error('Version history is unavailable.');
-    const data = await response.json();
-    if (currentId !== id) return;
-    versionData = { ...data, items: data.items || [] };
-    // The single pane starts on the active version; the rail highlights it.
-    viewingVersion = versionData.active_version;
-    const ready = readyVersions();
-    if (ready.length) {
-      const activeIndex = Math.max(0, ready.findIndex(item => item.is_active));
-      versionB = ready[activeIndex].version;
-      versionA = ready[Math.max(0, activeIndex - 1)].version;
-    }
-    renderVersions();
-    updateViewingTag();
-    // The version section has its own scroll now; make sure it (and the newest card
-    // at its top) is in view on first load even if the deck list is very long.
-    document.getElementById('version-section').scrollIntoView({ block: 'nearest' });
-    if (initialMode === 'compare') {
-      setMode('compare');
-    } else {
-      renderVersionControls();
+    const response = await fetch('/api/v1/decks/' + encodeURIComponent(id) + '/screens');
+    if (response.ok && currentId === id) {
+      const data = await response.json();
+      screens = data.items || [];
+      currentScreenKey = screens.length ? screens[0].key : null;
+      document.getElementById('scope-switch').hidden = screens.length <= 1;
+      renderDecks();
     }
   } catch (error) {
-    if (currentId === id) renderVersions(error.message || 'Version history is unavailable.');
+    // Multi-screen support is best-effort: the console still works as a
+    // single-screen viewer when the screens endpoint is unavailable.
   }
+
+  await loadVersionData();
+  if (initialMode === 'compare') setMode('compare');
 }
 
 document.querySelectorAll('#mode-switch button').forEach(button => {
   button.onclick = () => setMode(button.dataset.mode);
+});
+
+document.querySelectorAll('#scope-switch button').forEach(button => {
+  button.onclick = () => setScope(button.dataset.scope);
 });
 
 document.getElementById('version-a').onchange = event => {
@@ -412,7 +556,7 @@ document.getElementById('swap').onclick = () => {
 };
 
 document.getElementById('copy').onclick = () => {
-  navigator.clipboard.writeText(location.origin + '/v/' + currentId + '/');
+  navigator.clipboard.writeText(location.origin + '/v/' + currentId + '/' + screenPath());
 };
 
 fetch('/api/v1/decks').then(response => response.json()).then(data => {

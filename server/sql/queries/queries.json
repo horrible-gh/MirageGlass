@@ -14,6 +14,7 @@
         "max_version": "SELECT MAX(version_no) AS n FROM deck_versions WHERE deck_id = ?",
         "update_status": "UPDATE deck_versions SET status = ?, error_message = ?, updated_at = ? WHERE deck_id = ? AND version_no = ?",
         "update_thumb": "UPDATE deck_versions SET has_thumb = ?, updated_at = ? WHERE deck_id = ? AND version_no = ?",
+        "update_screens": "UPDATE deck_versions SET screens_json = ?, updated_at = ? WHERE deck_id = ? AND version_no = ?",
         "delete_one": "DELETE FROM deck_versions WHERE deck_id = ? AND version_no = ?",
         "delete_by_deck": "DELETE FROM deck_versions WHERE deck_id = ?"
     }

@@ -9,6 +9,7 @@ be used as-is.
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import tempfile
@@ -109,23 +110,27 @@ def _process_upload_into_version(
         with zip_path.open("wb") as f:
             shutil.copyfileobj(file.file, f)
 
-        storage.inspect_zip(zip_path, settings)
+        screens = storage.inspect_zip(zip_path, settings)
         src_dir = work_dir / "src"
         storage.extract_zip(zip_path, src_dir)
         zip_path.unlink(missing_ok=True)
 
-        index_html = src_dir / "index.html"
-        if not index_html.is_file():
+        # A manifest zip is thumbnailed from its first declared screen; a plain
+        # zip keeps the root index.html it has always used.
+        entry_html = src_dir / (screens[0]["entry"] if screens else "index.html")
+        if not entry_html.is_file():
             raise storage.ZipRejected("No index.html at the zip root.")
 
         # 2) A failed capture must not block the registration.
-        has_thumb = thumbnail.capture(index_html, work_dir / "thumb.png", settings)
+        has_thumb = thumbnail.capture(entry_html, work_dir / "thumb.png", settings)
 
         # 3) Move to the final location, mark ready, then switch the active pointer.
         #    Ordering matters: the active version must never reference a non-ready
         #    row, so the status flips to ready before set_active runs.
         storage.publish(work_dir, storage.version_dir(settings, deck_id, version_no))
         repo.set_version_thumb(deck_id, version_no, has_thumb)
+        if screens is not None:
+            repo.set_version_screens(deck_id, version_no, json.dumps(screens, ensure_ascii=False))
         repo.set_version_status(deck_id, version_no, "ready")
         repo.set_active(deck_id, version_no)
     except storage.ZipRejected as e:
@@ -172,6 +177,28 @@ def _active_version(repo: DeckRepository, deck_id: str) -> Optional[int]:
     if active is None or deck.get("active_status") != "ready":
         return None
     return active
+
+
+def _version_screens(row: dict, deck_name: str) -> list[dict]:
+    """A version's screens, from its manifest or the single implicit "main" screen.
+
+    A version with no screens.json (every version uploaded before multi-screen
+    support, and any plain single-index.html zip since) is one screen named after
+    the deck.
+    """
+    raw = row.get("screens_json")
+    if not raw:
+        return [{"key": "main", "tag": deck_name, "entry": "index.html"}]
+    return json.loads(raw)
+
+
+def _screen_viewer_path(entry: str) -> str:
+    """The /v/{deck_id}/ sub-path that serves a screen's entry file."""
+    if entry == "index.html":
+        return ""
+    if entry.endswith("/index.html"):
+        return entry[: -len("index.html")]
+    return entry
 
 
 # --- deck + version write endpoints ---------------------------------------
@@ -309,6 +336,94 @@ def list_versions(deck_id: str, repo: DeckRepository = Depends(get_repo)):
     }
 
 
+@api_router.get("/decks/{deck_id}/screens")
+def list_screens(
+    deck_id: str,
+    version: Optional[int] = Query(default=None),
+    repo: DeckRepository = Depends(get_repo),
+):
+    deck = repo.get(deck_id)
+    if not deck:
+        raise HTTPException(status_code=404, detail="not found")
+    target = _resolve_read_version(repo, deck_id, version)
+    row = repo.get_version(deck_id, target)
+    screens = _version_screens(row, deck["name"])
+    items = [
+        {
+            "key": screen["key"],
+            "tag": screen["tag"],
+            "viewer_path": _screen_viewer_path(screen["entry"]),
+        }
+        for screen in screens
+    ]
+    return {"deck_id": deck_id, "version": target, "items": items}
+
+
+@api_router.get("/decks/{deck_id}/screens/{screen_key}/versions")
+def list_screen_versions(
+    deck_id: str, screen_key: str, repo: DeckRepository = Depends(get_repo)
+):
+    """A screen's own change history, derived from the deck's version chain.
+
+    Only deck versions where this screen's content actually differs from its
+    immediately preceding appearance are listed, and relabeled 1..N - so two
+    screens in the same deck can show different counts even though both are
+    backed by the same shared deck_versions rows.
+    """
+    deck = repo.get(deck_id)
+    if not deck:
+        raise HTTPException(status_code=404, detail="not found")
+    active = deck.get("active_version")
+
+    history = []
+    last_hash = None
+    for row in repo.list_versions(deck_id):
+        if row["status"] != "ready":
+            continue
+        screen = next(
+            (s for s in _version_screens(row, deck["name"]) if s["key"] == screen_key), None
+        )
+        if screen is None:
+            continue
+        entry_path = storage.version_src_dir(settings, deck_id, row["version_no"]) / screen["entry"]
+        digest = storage.hash_file(entry_path)
+        if digest is None or digest == last_hash:
+            continue
+        last_hash = digest
+        history.append({"deck_version": row["version_no"], "created_at": row["created_at"]})
+
+    if not history:
+        raise HTTPException(status_code=404, detail="screen not found")
+
+    # The active deck version may not itself be a change entry (it can leave this
+    # particular screen untouched); "active" then falls on the latest change at or
+    # before it, since that is the content this screen is still showing.
+    active_index = None
+    if active is not None:
+        for index, entry in enumerate(history):
+            if entry["deck_version"] <= active:
+                active_index = index
+            else:
+                break
+
+    items = [
+        {
+            "version": index + 1,
+            "deck_version": entry["deck_version"],
+            "created_at": entry["created_at"],
+            "is_active": index == active_index,
+        }
+        for index, entry in enumerate(history)
+    ]
+    return {
+        "deck_id": deck_id,
+        "screen_key": screen_key,
+        "active_version": items[active_index]["version"] if active_index is not None else None,
+        "latest_version": items[-1]["version"],
+        "items": items,
+    }
+
+
 @api_router.get("/decks/{deck_id}/download")
 def download_deck(
     deck_id: str,
@@ -438,6 +553,18 @@ def help_document():
                 "description": "List every version of a deck in ascending order, with active_version, latest_version and per-version status/has_thumb/is_active. 404 if the deck does not exist.",
             },
             {
+                "method": "GET",
+                "path": "/api/v1/decks/{deck_id}/screens",
+                "auth": False,
+                "description": "List the screens of a version (default: active) as key/tag/viewer_path. A version with no screens.json manifest reports a single implicit screen. Add ?version=n for a specific version. 404 missing, 409 not ready.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/v1/decks/{deck_id}/screens/{screen_key}/versions",
+                "auth": False,
+                "description": "A single screen's own change history, derived from the deck's version chain and relabeled 1..N - so two screens in the same deck can report different counts. 404 if the screen never appears in a ready version.",
+            },
+            {
                 "method": "POST",
                 "path": "/api/v1/decks/{deck_id}/versions/{version_no}/activate",
                 "auth": True,
@@ -538,6 +665,7 @@ def help_document():
             "/v/{id}/ and /thumbs/{id}.png always serve the deck's active version, so the shared links stay stable. Use the separate /v/{id}/v{n}/ path to view a specific ready version without changing the active pointer.",
             "A failed version upload leaves the active version untouched: the shared link keeps serving whatever was ready before.",
             "?version=n is read only. It works on /download and /files; the only way to change the active version is POST .../versions/{n}/activate.",
+            "A zip with a root screens.json registers multiple screens instead of a single index.html; each entry needs key/tag/entry and the entry file must exist in the zip. Without screens.json, a deck behaves exactly as before (one implicit screen).",
         ],
     }
 

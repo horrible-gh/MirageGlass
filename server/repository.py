@@ -101,6 +101,14 @@ class DeckRepository:
             (1 if has_thumb else 0, now_iso(), deck_id, version_no),
         )
 
+    def set_version_screens(self, deck_id: str, version_no: int, screens_json: Optional[str]) -> None:
+        """Store the version's screens.json manifest, or None for a single-screen zip."""
+        self.sq.execute(
+            QUERY_FILE,
+            "deck_versions.update_screens",
+            (screens_json, now_iso(), deck_id, version_no),
+        )
+
     def delete_version(self, deck_id: str, version_no: int) -> None:
         self.sq.execute(QUERY_FILE, "deck_versions.delete_one", (deck_id, version_no))
 

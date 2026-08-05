@@ -13,6 +13,8 @@ expensive if they drift.
 | GET | `/api/v1/decks/{id}` | none | single deck |
 | GET | `/api/v1/decks/{id}/download` | none | ready deck source as a re-registerable zip; 404 missing / 409 not ready |
 | GET | `/api/v1/decks/{id}/files` | none | sorted source-relative file paths and sizes; 404 missing / 409 not ready |
+| GET | `/api/v1/decks/{id}/screens` | none | screens of a version (default active) as key/tag/viewer_path; ?version=n; 404 missing / 409 not ready |
+| GET | `/api/v1/decks/{id}/screens/{key}/versions` | none | one screen's own change history, derived and relabeled 1..N; 404 if the screen never appears |
 | DELETE | `/api/v1/decks/{id}` | Bearer | files first, database second -> 204 |
 | GET | `/v/{id}/{path}` | none | static serving of `storage/decks/{id}/src` |
 | GET | `/thumbs/{id}.png` | none | captured png |
@@ -32,6 +34,22 @@ Response codes: 201 new / 200 idempotent replay / 400 bad input or rejected zip 
 - `idempotency_key`: UNIQUE. Blocks duplicate automated registrations at the database level
 - Timestamps are UTC ISO8601 strings
 - Index: `(status, created_at DESC)`
+
+## Multi-screen decks — `003_deck_screens.sql`
+
+`deck_versions.screens_json` is a nullable TEXT column: a JSON array of
+`{"key", "tag", "entry"}` objects, present only on versions uploaded with a
+root `screens.json` manifest. NULL (every version before this migration, and
+any plain single-`index.html` zip since) means one implicit screen: `key="main"`,
+`tag=<deck name>`, `entry="index.html"`. No viewer route changed - a screen's
+`entry` is already a path inside the version's `src/`, so `/v/{id}/{dir}/`
+serves it through the existing asset resolution.
+
+A screen's own version history (`GET .../screens/{key}/versions`) is not stored
+separately: it is derived by SHA-256-hashing that screen's entry file at every
+ready deck version and collapsing runs of identical hashes, then relabeling the
+survivors `1..N`. This is why two screens in the same deck can report different
+version counts while still being backed by the same `deck_versions` rows.
 
 ## Query keys — `server/sql/queries/queries.json`
 

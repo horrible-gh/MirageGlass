@@ -7,8 +7,9 @@
 <style>
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; font-family: system-ui, "Segoe UI", sans-serif; color: #202124; }
-  button, select { font: inherit; }
+  button, select, input { font: inherit; }
   #app { --rail-w: 260px; display: flex; height: 100%; background: #f4f5f7; }
+  #app[hidden] { display: none; }
   #rail { width: var(--rail-w); flex: none; border-right: 1px solid #dfe1e5; display: flex; flex-direction: column;
           background: #fafafb; transition: width 160ms ease; }
   #app.rail-hidden #rail { width: 0; border-right: 0; overflow: hidden; }
@@ -50,6 +51,9 @@
   .deck-versions { margin-top: 5px; }
   .status-ready { color: #137333; }
   .status-failed { color: #b3261e; }
+  .set-active-btn { display: block; margin-top: 6px; padding: 3px 8px; font-size: 10px; font-weight: 650;
+                     border: 1px solid #1a73e8; border-radius: 4px; background: #fff; color: #1a73e8; cursor: pointer; }
+  .set-active-btn:hover { background: #e8f0fe; }
   #stage { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   #bar { min-height: 48px; flex: none; display: flex; align-items: center; gap: 10px; padding: 7px 12px;
          border-bottom: 1px solid #dfe1e5; background: #fff; font-size: 13px; }
@@ -59,6 +63,7 @@
   #bar button { padding: 5px 9px; border: 1px solid #c7c9cd; border-radius: 5px; background: #fff; color: #3c4043; cursor: pointer; font-size: 12px; }
   #bar button:hover { background: #f5f6f7; }
   #rail-toggle { width: 34px; flex: none; line-height: 1.2; }
+  #to-library { flex: none; white-space: nowrap; }
   #mode-switch, #scope-switch { display: flex; }
   #mode-switch { margin-left: auto; }
   #mode-switch button, #scope-switch button { border-radius: 0; }
@@ -79,16 +84,103 @@
   #viewer:not(.compare) #pane-b { display: none; }
   iframe { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }
   .empty { padding: 24px; color: #8a8a92; font-size: 12px; }
+
+  /* --- Library/Home ------------------------------------------------------ */
+  #library { height: 100%; display: flex; flex-direction: column; background: #f4f5f7; }
+  #library[hidden] { display: none; }
+  #lib-bar { flex: none; display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+             border-bottom: 1px solid #dfe1e5; background: #fff; }
+  #lib-bar .lib-title { flex: none; font-weight: 700; font-size: 15px; }
+  #lib-search { flex: 1; max-width: 360px; padding: 6px 10px; border: 1px solid #c7c9cd; border-radius: 5px; font-size: 13px; }
+  #lib-new-group { flex: none; padding: 6px 12px; border: 1px solid #1a73e8; border-radius: 5px;
+                   background: #1a73e8; color: #fff; cursor: pointer; font-size: 13px; font-weight: 650; }
+  #lib-new-group:hover { background: #1765cc; }
+  #lib-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 16px 40px; }
+  .lib-shelf { margin-bottom: 18px; }
+  .lib-shelf[hidden] { display: none; }
+  .lib-shelf h2 { margin: 0 0 8px; font-size: 11px; font-weight: 700; letter-spacing: .2px;
+                  text-transform: uppercase; color: #6f7278; }
+  .lib-cards { display: flex; flex-wrap: wrap; gap: 12px; }
+  .lib-group { margin-bottom: 18px; }
+  .lib-group-header { display: flex; align-items: center; gap: 6px; padding: 4px; }
+  .lib-group-toggle { border: 0; background: none; cursor: pointer; font-size: 12px; width: 20px; color: #45484d; }
+  .lib-group-toggle .arrow { display: inline-block; transition: transform 120ms ease; }
+  .lib-group.collapsed .lib-group-toggle .arrow { transform: rotate(-90deg); }
+  .lib-group-name { font-weight: 700; font-size: 13px; }
+  .lib-group-kebab { margin-left: auto; border: 0; background: none; cursor: pointer; font-size: 16px;
+                      padding: 2px 8px; border-radius: 4px; color: #5f6368; }
+  .lib-group-kebab:hover { background: #e8eaed; }
+  .lib-group-cards { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 0 0 20px; }
+  .lib-group.collapsed .lib-group-cards { display: none; }
+  .lib-card { position: relative; width: 190px; border: 1px solid #dcdce0; border-radius: 6px; background: #fff;
+              padding: 8px; cursor: pointer; }
+  .lib-card:hover { border-color: #b9c6e6; box-shadow: 0 1px 4px rgba(26,115,232,.15); }
+  .lib-card-thumb { width: 100%; aspect-ratio: 16 / 10; border: 1px solid #dcdce0; border-radius: 4px;
+                     background: #fff; overflow: hidden; display: flex; align-items: center; justify-content: center;
+                     color: #9a9aa2; font-size: 20px; }
+  .lib-card-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+  .lib-card-name { margin-top: 6px; font-size: 12px; font-weight: 650; line-height: 1.35; word-break: break-all;
+                    padding-right: 18px; }
+  .lib-card-meta { margin-top: 2px; font-size: 11px; color: #8a8a92; }
+  .lib-pin { position: absolute; top: 6px; right: 30px; border: 0; background: none; cursor: pointer;
+             font-size: 15px; color: #9a9aa2; padding: 2px 4px; line-height: 1; }
+  .lib-pin.pinned { color: #f9ab00; }
+  .lib-kebab { position: absolute; top: 6px; right: 6px; border: 0; background: none; cursor: pointer;
+               font-size: 16px; color: #5f6368; padding: 2px 6px; border-radius: 4px; }
+  .lib-kebab:hover, .lib-pin:hover { background: #eef1f6; }
+  .lib-empty { padding: 20px 4px; color: #8a8a92; font-size: 12px; }
+
+  .lib-menu { position: fixed; z-index: 40; min-width: 172px; background: #fff; border: 1px solid #dcdce0;
+              border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.16); padding: 4px; }
+  .lib-menu-item { display: block; width: 100%; text-align: left; padding: 7px 10px; border: 0; background: none;
+                    cursor: pointer; font-size: 12px; border-radius: 4px; color: #202124; }
+  .lib-menu-item:hover { background: #f1f4fa; }
+  .lib-menu-item:disabled { color: #9a9aa2; cursor: default; }
+  .lib-menu-item:disabled:hover { background: none; }
+  .lib-menu-item.destructive { color: #b3261e; }
+  .lib-menu-item.submenu-parent::after { content: '\203A'; float: right; color: #9a9aa2; }
+  .lib-menu-sep { height: 1px; margin: 4px 2px; background: #e8eaed; }
+
+  /* --- Custom dialog (backdrop/outside click/Esc never close it) --------- */
+  #dialog-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(32,33,36,.55);
+                     display: flex; align-items: center; justify-content: center; padding: 20px; }
+  #dialog-overlay[hidden] { display: none; }
+  #dialog-box { width: 100%; max-width: 420px; background: #fff; border-radius: 8px;
+                box-shadow: 0 10px 40px rgba(0,0,0,.25); display: flex; flex-direction: column; max-height: 90vh; }
+  #dialog-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid #e8eaed; }
+  #dialog-title { margin: 0; font-size: 15px; font-weight: 700; flex: 1; }
+  #dialog-x { flex: none; border: 0; background: none; font-size: 18px; line-height: 1; cursor: pointer;
+              color: #5f6368; padding: 2px 6px; border-radius: 4px; }
+  #dialog-x:hover { background: #f1f3f4; }
+  #dialog-body { padding: 16px; font-size: 13px; color: #3c4043; overflow-y: auto; line-height: 1.5; }
+  #dialog-body p { margin: 0 0 8px; }
+  #dialog-body p:last-child { margin-bottom: 0; }
+  .dialog-field { display: block; font-size: 12px; font-weight: 650; color: #45484d; }
+  .dialog-field input { display: block; width: 100%; margin-top: 6px; padding: 7px 9px; border: 1px solid #c7c9cd;
+                         border-radius: 5px; font-size: 13px; color: #202124; }
+  #dialog-foot { flex: none; display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px;
+                 border-top: 1px solid #e8eaed; }
+  #dialog-foot button { padding: 7px 14px; border-radius: 5px; font-size: 13px; cursor: pointer; }
+  #dialog-cancel[hidden] { display: none; }
+  #dialog-cancel { border: 1px solid #c7c9cd; background: #fff; color: #3c4043; }
+  #dialog-cancel:hover { background: #f5f6f7; }
+  #dialog-confirm { border: 1px solid #1a73e8; background: #1a73e8; color: #fff; font-weight: 650; }
+  #dialog-confirm:hover { background: #1765cc; }
+  #dialog-confirm.destructive { border-color: #b3261e; background: #b3261e; }
+  #dialog-confirm.destructive:hover { background: #932016; }
+  #dialog-confirm:disabled { opacity: .5; cursor: not-allowed; }
+
   @media (max-width: 760px) {
     #app { --rail-w: 210px; }
     #bar { gap: 6px; }
     #copy { display: none; }
     #compare-controls { justify-content: flex-start; overflow-x: auto; }
+    .lib-card { width: 46%; }
   }
 </style>
 </head>
 <body>
-<div id="app">
+<div id="app" hidden>
   <aside id="rail">
     <div class="rail-heading">Decks</div>
     <div id="deck-list"><div class="empty">Loading...</div></div>
@@ -100,6 +192,7 @@
   <main id="stage">
     <div id="bar">
       <button id="rail-toggle" aria-expanded="true" aria-controls="rail" aria-label="Toggle deck list" title="Hide deck list">&#9776;</button>
+      <button id="to-library" type="button">&larr; Library</button>
       <span class="title">MirageGlass</span>
       <span id="viewing-tag" class="viewing-tag" hidden></span>
       <div id="scope-switch" hidden aria-label="Version scope">
@@ -129,6 +222,37 @@
     </div>
   </main>
 </div>
+<div id="library" hidden>
+  <header id="lib-bar">
+    <span class="lib-title">MirageGlass</span>
+    <input id="lib-search" type="search" placeholder="Search decks and groups" aria-label="Search decks and groups" />
+    <button id="lib-new-group" type="button">New group</button>
+  </header>
+  <div id="lib-scroll">
+    <section id="lib-pinned-row" class="lib-shelf" hidden>
+      <h2>Pinned</h2>
+      <div class="lib-cards"></div>
+    </section>
+    <section id="lib-recent-row" class="lib-shelf" hidden>
+      <h2>Recent</h2>
+      <div class="lib-cards"></div>
+    </section>
+    <div id="lib-groups"><div class="lib-empty">Loading...</div></div>
+  </div>
+</div>
+<div id="dialog-overlay" hidden>
+  <div id="dialog-box" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+    <div id="dialog-head">
+      <h2 id="dialog-title"></h2>
+      <button id="dialog-x" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div id="dialog-body"></div>
+    <div id="dialog-foot">
+      <button id="dialog-cancel" type="button">Cancel</button>
+      <button id="dialog-confirm" type="button">OK</button>
+    </div>
+  </div>
+</div>
 <script>
 // The stable active viewer and the read-only version comparison view share this page.
 // The single ("Active") pane also lets the reader open any past ready version from the
@@ -138,7 +262,17 @@
 // rail tree of screens plus a Deck/Screen scope switch: Deck keeps today's deck-wide
 // timeline, Screen narrows the version panel to just the selected screen's own change
 // history (derived server-side, so two screens can show different counts).
+//
+// Root routing: an empty location.hash renders Library/Home; a hash with a deck id
+// opens that deck's Viewer directly (bookmark-compatible). The two screens are mutually
+// exclusive siblings toggled through their `hidden` attribute - see showLibraryScreen()
+// and showViewerScreen(). Management UI (new group, kebab menus, delete, set active) is
+// always visible from first load; the server alone decides whether a write is allowed
+// (D0007 3.6). No admin-mode entry button, token prompt, or session-storage toggle exists
+// in this file on purpose.
 let decks = [];
+let decksLoaded = false;
+let decksLoadFailed = false;
 let currentId = null;
 let screens = [];
 let currentScreenKey = null;
@@ -175,7 +309,7 @@ document.getElementById('rail-toggle').onclick = () => {
   }
 };
 
-// Deck names and API strings must be escaped before any innerHTML insertion.
+// Deck/group names and API strings must be escaped before any innerHTML insertion.
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -196,7 +330,9 @@ function formatTimestamp(iso) {
 function renderDecks() {
   const list = document.getElementById('deck-list');
   if (!decks.length) {
-    list.innerHTML = '<div class="empty">No decks registered yet.</div>';
+    list.innerHTML = decksLoadFailed
+      ? '<div class="empty">Deck list is unavailable.</div>'
+      : '<div class="empty">No decks registered yet.</div>';
     return;
   }
   list.innerHTML = '';
@@ -281,6 +417,9 @@ function renderVersions(errorMessage) {
     // history - compare keeps its own dropdown-driven selection.
     const selectable = item.status === 'ready' && mode === 'single';
     const viewing = selectable && item.version === viewingVersion;
+    // "Set active" (D0007 3.6/6.3) is a Deck-scope-only action, independent of the
+    // single/compare toggle, and only makes sense on a ready, non-active version.
+    const canActivate = item.status === 'ready' && scope === 'deck' && item.version !== active;
     const card = document.createElement('div');
     card.className = 'version-card'
       + (selectable ? ' selectable' : '')
@@ -303,6 +442,17 @@ function renderVersions(errorMessage) {
           viewVersion(item.version);
         }
       };
+    }
+    if (canActivate) {
+      const activateBtn = document.createElement('button');
+      activateBtn.type = 'button';
+      activateBtn.className = 'set-active-btn';
+      activateBtn.textContent = 'Set active';
+      activateBtn.onclick = event => {
+        event.stopPropagation();
+        setActiveVersion(currentId, item.version);
+      };
+      card.appendChild(activateBtn);
     }
     list.appendChild(card);
   });
@@ -559,15 +709,745 @@ document.getElementById('copy').onclick = () => {
   navigator.clipboard.writeText(location.origin + '/v/' + currentId + '/' + screenPath());
 };
 
-fetch('/api/v1/decks').then(response => response.json()).then(data => {
-  decks = data.items || [];
+// --- Shared fetch helper for every Library/organization mutation -----------
+// Normalizes the fixed error shape from D0007 3.6/T0010 0): {detail:{code,message}}
+// on 401/404/422, or a legacy plain-string detail (older deck-delete route). Read
+// endpoints and 204 responses just resolve with their body (or null).
+async function apiRequest(url, options) {
+  const response = await fetch(url, options);
+  if (response.ok) {
+    if (response.status === 204) return null;
+    return response.json();
+  }
+  let detail = null;
+  try {
+    detail = (await response.json()).detail;
+  } catch (error) {
+    // No JSON body to read; fall through with a generic message below.
+  }
+  const code = detail && typeof detail === 'object' ? detail.code : null;
+  const message = detail && typeof detail === 'object' ? detail.message
+    : (typeof detail === 'string' ? detail : null);
+  const error = new Error(message || ('Request failed (' + response.status + ')'));
+  error.status = response.status;
+  error.code = code;
+  throw error;
+}
+
+function describeApiError(error) {
+  if (error && error.code === 'unauthorized') return 'You do not have permission to make this change.';
+  if (error && error.code === 'not_found') return 'This item no longer exists. The list has been refreshed.';
+  if (error && error.code === 'invalid_name') return error.message || 'That name is not valid.';
+  if (error && error.status) return error.message || ('The server rejected this request (' + error.status + ').');
+  return 'Could not reach the server. Please try again.';
+}
+
+async function showFailureAlert(error, title) {
+  await showAlert({
+    title: title || 'Action failed',
+    bodyHtml: `<p>${esc(describeApiError(error))}</p>`,
+  });
+}
+
+async function setActiveVersion(deckId, versionNo) {
+  try {
+    await apiRequest(
+      '/api/v1/decks/' + encodeURIComponent(deckId) + '/versions/' + encodeURIComponent(versionNo) + '/activate',
+      { method: 'POST' }
+    );
+    await loadVersionData();
+  } catch (error) {
+    await loadVersionData();
+    await showFailureAlert(error, 'Could not set this version as active.');
+  }
+}
+
+// --- Custom dialog (D0007 6.4 / T0010 §3): name input, destructive confirm, --
+// --- and failure alerts all funnel through this one overlay. It never closes --
+// --- on backdrop click, outside click, or Esc - only the X, Cancel, or the ----
+// --- confirm button resolve it. Kebab dropdown menus further below are a ------
+// --- separate, lighter-weight component and intentionally do close on -------
+// --- outside click / Esc, matching ordinary menu conventions. -----------------
+const dialogEls = {
+  overlay: document.getElementById('dialog-overlay'),
+  box: document.getElementById('dialog-box'),
+  title: document.getElementById('dialog-title'),
+  body: document.getElementById('dialog-body'),
+  cancelBtn: document.getElementById('dialog-cancel'),
+  confirmBtn: document.getElementById('dialog-confirm'),
+  closeBtn: document.getElementById('dialog-x'),
+};
+
+let activeDialog = null;
+
+function dialogTrapKeydown(event) {
+  if (event.key !== 'Tab') return;
+  const focusables = Array.from(dialogEls.box.querySelectorAll('button, input'))
+    .filter(el => !el.disabled && el.offsetParent !== null);
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+  // Esc is deliberately not handled here: the dialog only closes through an
+  // explicit X / Cancel / Confirm click (D0007 6.4).
+}
+
+function closeDialog(result) {
+  dialogEls.overlay.hidden = true;
+  dialogEls.body.innerHTML = '';
+  document.removeEventListener('keydown', dialogTrapKeydown, true);
+  const pending = activeDialog;
+  activeDialog = null;
+  if (pending) pending.resolve(result);
+}
+
+function openGenericDialog(config) {
+  const {
+    title,
+    bodyHtml,
+    showCancel = true,
+    cancelText = 'Cancel',
+    confirmText = 'OK',
+    destructive = false,
+    focus = 'cancel',
+  } = config;
+  return new Promise(resolve => {
+    activeDialog = { resolve };
+    dialogEls.title.textContent = title;
+    dialogEls.body.innerHTML = bodyHtml;
+    dialogEls.cancelBtn.hidden = !showCancel;
+    dialogEls.cancelBtn.textContent = cancelText;
+    dialogEls.confirmBtn.textContent = confirmText;
+    dialogEls.confirmBtn.disabled = false;
+    dialogEls.confirmBtn.className = destructive ? 'destructive' : '';
+    dialogEls.overlay.hidden = false;
+    document.addEventListener('keydown', dialogTrapKeydown, true);
+
+    const input = dialogEls.body.querySelector('input');
+    if (input) {
+      const updateConfirmState = () => { dialogEls.confirmBtn.disabled = !input.value.trim(); };
+      input.addEventListener('input', updateConfirmState);
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !dialogEls.confirmBtn.disabled) {
+          event.preventDefault();
+          dialogEls.confirmBtn.click();
+        }
+      });
+      updateConfirmState();
+    }
+
+    // Initial focus always lands on a reversible, non-destructive button
+    // (never the input) - D0007 6.4 / T0010 §3.
+    const focusTarget = focus === 'confirm' ? dialogEls.confirmBtn
+      : (showCancel ? dialogEls.cancelBtn : dialogEls.confirmBtn);
+    focusTarget.focus();
+  });
+}
+
+dialogEls.closeBtn.onclick = () => closeDialog({ action: 'cancel' });
+dialogEls.cancelBtn.onclick = () => closeDialog({ action: 'cancel' });
+dialogEls.confirmBtn.onclick = () => {
+  const input = dialogEls.body.querySelector('input');
+  closeDialog({ action: 'confirm', value: input ? input.value.trim() : true });
+};
+// The overlay backdrop intentionally has no click handler at all: a click there
+// (or anywhere outside #dialog-box) does nothing, per D0007 6.4.
+
+async function promptName({ title, label, initialValue = '' }) {
+  const result = await openGenericDialog({
+    title,
+    bodyHtml: `<label class="dialog-field">${esc(label)}<input type="text" id="dialog-input" maxlength="200" value="${esc(initialValue)}"></label>`,
+    confirmText: 'Save',
+  });
+  return result.action === 'confirm' ? result.value : null;
+}
+
+async function confirmDestructive({ title, bodyHtml, confirmText = 'Delete' }) {
+  const result = await openGenericDialog({ title, bodyHtml, confirmText, destructive: true, focus: 'cancel' });
+  return result.action === 'confirm';
+}
+
+async function showAlert({ title, bodyHtml }) {
+  await openGenericDialog({ title, bodyHtml, showCancel: false, confirmText: 'OK', focus: 'confirm' });
+}
+
+// --- Lightweight kebab/context menus (not the dialog above; ordinary menu ---
+// --- conventions apply, so outside click / Esc close them). -----------------
+let openMenus = [];
+
+function closeMenu() {
+  openMenus.forEach(menu => menu.remove());
+  openMenus = [];
+  document.removeEventListener('mousedown', onOutsideMenuClick, true);
+  document.removeEventListener('keydown', onMenuKeydown, true);
+}
+
+function onOutsideMenuClick(event) {
+  if (openMenus.some(menu => menu.contains(event.target))) return;
+  closeMenu();
+}
+
+function onMenuKeydown(event) {
+  if (event.key === 'Escape') closeMenu();
+}
+
+function positionMenu(menu, anchorEl, isSubmenu) {
+  const rect = anchorEl.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  let top = isSubmenu ? rect.top : rect.bottom + 4;
+  let left = isSubmenu ? rect.right + 4 : rect.right - menuRect.width;
+  const maxLeft = window.innerWidth - menuRect.width - 8;
+  const maxTop = window.innerHeight - menuRect.height - 8;
+  left = Math.max(8, Math.min(left, maxLeft));
+  top = Math.max(8, Math.min(top, maxTop));
+  menu.style.top = top + 'px';
+  menu.style.left = left + 'px';
+}
+
+function openMenu(anchorEl, items, isSubmenu) {
+  if (!isSubmenu) closeMenu();
+  const menu = document.createElement('div');
+  menu.className = 'lib-menu';
+  items.forEach(item => {
+    if (item.separator) {
+      const sep = document.createElement('div');
+      sep.className = 'lib-menu-sep';
+      menu.appendChild(sep);
+      return;
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'lib-menu-item'
+      + (item.destructive ? ' destructive' : '')
+      + (item.submenu ? ' submenu-parent' : '');
+    btn.textContent = item.label;
+    btn.disabled = !!item.disabled;
+    if (item.submenu) {
+      btn.onclick = event => {
+        event.stopPropagation();
+        openMenu(btn, item.submenu, true);
+      };
+    } else if (!item.disabled) {
+      btn.onclick = event => {
+        event.stopPropagation();
+        closeMenu();
+        item.onClick();
+      };
+    }
+    menu.appendChild(btn);
+  });
+  document.body.appendChild(menu);
+  positionMenu(menu, anchorEl, isSubmenu);
+  openMenus.push(menu);
+  if (!isSubmenu) {
+    setTimeout(() => {
+      document.addEventListener('mousedown', onOutsideMenuClick, true);
+      document.addEventListener('keydown', onMenuKeydown, true);
+    }, 0);
+  }
+}
+
+// --- Library/Home personal state (server never sees these - D0007 7) --------
+const LS_PIN_KEY = 'mg.library.pinned';
+const LS_RECENT_KEY = 'mg.library.recent';
+const LS_COLLAPSED_KEY = 'mg.library.collapsed';
+const UNGROUPED_COLLAPSE_KEY = '__ungrouped__';
+const RECENT_LIMIT = 8;
+
+function readJsonList(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function writeJsonList(key, list) {
+  try {
+    localStorage.setItem(key, JSON.stringify(list));
+  } catch (error) {
+    // The in-memory state for this page load still applies.
+  }
+}
+
+function getPinnedIds() { return readJsonList(LS_PIN_KEY); }
+function isPinned(id) { return getPinnedIds().includes(id); }
+function togglePin(id) {
+  const list = getPinnedIds();
+  const index = list.indexOf(id);
+  if (index === -1) list.unshift(id); else list.splice(index, 1);
+  writeJsonList(LS_PIN_KEY, list);
+}
+
+function getRecentIds() { return readJsonList(LS_RECENT_KEY); }
+function recordRecent(id) {
+  const list = getRecentIds().filter(item => item !== id);
+  list.unshift(id);
+  writeJsonList(LS_RECENT_KEY, list.slice(0, RECENT_LIMIT));
+}
+
+function getCollapsedIds() { return readJsonList(LS_COLLAPSED_KEY); }
+function isCollapsed(id) { return getCollapsedIds().includes(id); }
+function toggleCollapsed(id) {
+  const list = getCollapsedIds();
+  const index = list.indexOf(id);
+  if (index === -1) list.push(id); else list.splice(index, 1);
+  writeJsonList(LS_COLLAPSED_KEY, list);
+}
+
+// --- Library/Home data + rendering ------------------------------------------
+let libraryData = null;
+
+// Every read of the library record - Library/Home entry as well as each
+// mutation's post-write reload - also drops the Viewer's separate
+// GET /api/v1/decks cache, so Library's own next render never shows a deck
+// this tab's mutation just removed or renamed. The Viewer's own re-fetch on
+// every hash entry (see openDeckFromHash) is what actually guarantees a
+// stale identity/name is never reused there, regardless of whether Library
+// was visited in between (D0007 3.1, 3.7).
+async function loadLibrary() {
+  decksLoaded = false;
+  const container = document.getElementById('lib-groups');
+  try {
+    libraryData = await apiRequest('/api/v1/library');
+  } catch (error) {
+    libraryData = null;
+    container.innerHTML = '<div class="lib-empty">Library is unavailable.</div>';
+    document.getElementById('lib-pinned-row').hidden = true;
+    document.getElementById('lib-recent-row').hidden = true;
+    return;
+  }
+  pruneStaleState();
+  renderLibrary();
+}
+
+// D0007 §7: personal state pointing at a deck/group the server no longer has
+// is quietly dropped (no error) whenever the library record is reloaded.
+function pruneStaleState() {
+  const deckIds = new Set(allLibraryDecks().map(deck => deck.id));
+  const groupIds = new Set(libraryData.groups.map(group => group.id));
+  groupIds.add(UNGROUPED_COLLAPSE_KEY);
+  writeJsonList(LS_PIN_KEY, getPinnedIds().filter(id => deckIds.has(id)));
+  writeJsonList(LS_RECENT_KEY, getRecentIds().filter(id => deckIds.has(id)));
+  writeJsonList(LS_COLLAPSED_KEY, getCollapsedIds().filter(id => groupIds.has(id)));
+}
+
+function allLibraryDecks() {
+  if (!libraryData) return [];
+  const all = [];
+  libraryData.groups.forEach(group => all.push(...group.decks));
+  all.push(...libraryData.ungrouped.decks);
+  return all;
+}
+
+function findLibraryDeck(id) {
+  return allLibraryDecks().find(deck => deck.id === id) || null;
+}
+
+function renderShelf(sectionId, ids) {
+  const section = document.getElementById(sectionId);
+  const container = section.querySelector('.lib-cards');
+  const found = ids.map(findLibraryDeck).filter(Boolean);
+  section.hidden = found.length === 0;
+  container.innerHTML = '';
+  found.forEach(deck => container.appendChild(buildDeckCard(deck)));
+}
+
+function renderLibrary() {
+  if (!libraryData) return;
+  renderShelf('lib-pinned-row', getPinnedIds());
+  renderShelf('lib-recent-row', getRecentIds());
+  renderGroups(document.getElementById('lib-search').value.trim().toLowerCase());
+}
+
+// D0007 6.2 / T0010 §6 search order: (1) a group-name match keeps every deck in
+// that group regardless of their own names; (2) otherwise only decks whose own
+// name matches survive, and the group is hidden entirely if none do. Ungrouped
+// is never itself an entity, so it always takes branch (2).
+function renderGroups(query) {
+  const container = document.getElementById('lib-groups');
+  container.innerHTML = '';
+  let rendered = 0;
+
+  libraryData.groups.forEach(group => {
+    let visibleDecks;
+    if (!query || group.name.toLowerCase().includes(query)) {
+      visibleDecks = group.decks;
+    } else {
+      visibleDecks = group.decks.filter(deck => deck.name.toLowerCase().includes(query));
+      if (!visibleDecks.length) return;
+    }
+    // A stored collapse preference never hides a live search match: matches
+    // render expanded without touching the saved preference itself.
+    container.appendChild(buildGroupSection(group, visibleDecks, Boolean(query)));
+    rendered++;
+  });
+
+  const ungroupedDecks = query
+    ? libraryData.ungrouped.decks.filter(deck => deck.name.toLowerCase().includes(query))
+    : libraryData.ungrouped.decks;
+  if (!query || ungroupedDecks.length) {
+    container.appendChild(buildUngroupedSection(ungroupedDecks, Boolean(query)));
+    rendered++;
+  }
+
+  if (!rendered) {
+    container.innerHTML = '<div class="lib-empty">No matches.</div>';
+  }
+}
+
+function buildGroupHeader(name, expanded, kebabItems) {
+  const header = document.createElement('div');
+  header.className = 'lib-group-header';
+
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'lib-group-toggle';
+  toggle.setAttribute('aria-label', 'Toggle group');
+  toggle.setAttribute('aria-expanded', String(expanded));
+  toggle.innerHTML = '<span class="arrow">&#9662;</span>';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'lib-group-name';
+  nameEl.textContent = name;
+
+  header.append(toggle, nameEl);
+
+  if (kebabItems) {
+    const kebab = document.createElement('button');
+    kebab.type = 'button';
+    kebab.className = 'lib-group-kebab';
+    kebab.setAttribute('aria-label', 'Group actions');
+    kebab.textContent = '⋮';
+    kebab.onclick = event => {
+      event.stopPropagation();
+      openMenu(kebab, kebabItems);
+    };
+    header.appendChild(kebab);
+  }
+
+  return { header, toggle };
+}
+
+function buildCardsRow(decksToShow, emptyText) {
+  const cards = document.createElement('div');
+  cards.className = 'lib-group-cards';
+  if (!decksToShow.length) {
+    const empty = document.createElement('div');
+    empty.className = 'lib-empty';
+    empty.textContent = emptyText;
+    cards.appendChild(empty);
+  } else {
+    decksToShow.forEach(deck => cards.appendChild(buildDeckCard(deck)));
+  }
+  return cards;
+}
+
+function buildGroupSection(group, decksToShow, forceExpanded) {
+  const section = document.createElement('section');
+  const collapsed = !forceExpanded && isCollapsed(group.id);
+  section.className = 'lib-group' + (collapsed ? ' collapsed' : '');
+  section.dataset.groupId = group.id;
+
+  const { header, toggle } = buildGroupHeader(group.name, !collapsed, [
+    { label: 'Rename', onClick: () => renameGroup(group) },
+    { label: 'Delete', destructive: true, onClick: () => deleteGroup(group) },
+  ]);
+  toggle.onclick = () => {
+    toggleCollapsed(group.id);
+    const nowCollapsed = forceExpanded ? false : isCollapsed(group.id);
+    section.classList.toggle('collapsed', nowCollapsed);
+    toggle.setAttribute('aria-expanded', String(!nowCollapsed));
+  };
+
+  section.appendChild(header);
+  section.appendChild(buildCardsRow(decksToShow, 'No decks in this group.'));
+  return section;
+}
+
+function buildUngroupedSection(decksToShow, forceExpanded) {
+  const section = document.createElement('section');
+  const collapsed = !forceExpanded && isCollapsed(UNGROUPED_COLLAPSE_KEY);
+  section.className = 'lib-group' + (collapsed ? ' collapsed' : '');
+
+  // Ungrouped has no kebab menu: it is a virtual section, not a real group
+  // (no rename/delete - D0007 §1/§6.2).
+  const { header, toggle } = buildGroupHeader('Ungrouped', !collapsed, null);
+  toggle.onclick = () => {
+    toggleCollapsed(UNGROUPED_COLLAPSE_KEY);
+    const nowCollapsed = forceExpanded ? false : isCollapsed(UNGROUPED_COLLAPSE_KEY);
+    section.classList.toggle('collapsed', nowCollapsed);
+    toggle.setAttribute('aria-expanded', String(!nowCollapsed));
+  };
+
+  section.appendChild(header);
+  section.appendChild(buildCardsRow(decksToShow, 'No decks.'));
+  return section;
+}
+
+function buildMoveSubmenu(deck) {
+  const items = [];
+  if (deck.group_id !== null) {
+    items.push({ label: 'Ungrouped', onClick: () => moveDeckToGroup(deck, null) });
+  }
+  (libraryData ? libraryData.groups : []).forEach(group => {
+    if (group.id === deck.group_id) return;
+    items.push({ label: group.name, onClick: () => moveDeckToGroup(deck, group.id) });
+  });
+  if (!items.length) items.push({ label: 'No other groups', disabled: true });
+  return items;
+}
+
+function openDeckMenu(anchor, deck) {
+  openMenu(anchor, [
+    { label: 'Rename', onClick: () => renameDeck(deck) },
+    { label: 'Move to group', submenu: buildMoveSubmenu(deck) },
+    { label: 'Copy link', onClick: () => copyDeckLink(deck) },
+    { separator: true },
+    { label: 'Delete', destructive: true, onClick: () => deleteDeck(deck) },
+  ]);
+}
+
+function buildDeckCard(deck) {
+  const card = document.createElement('div');
+  card.className = 'lib-card';
+  card.dataset.deckId = deck.id;
+
+  const thumb = document.createElement('div');
+  thumb.className = 'lib-card-thumb';
+  if (deck.thumb_url) {
+    const img = document.createElement('img');
+    img.src = deck.thumb_url;
+    img.alt = '';
+    thumb.appendChild(img);
+  } else {
+    thumb.textContent = (deck.name || '?').trim().slice(0, 1).toUpperCase() || '?';
+  }
+
+  const pinned = isPinned(deck.id);
+  const pin = document.createElement('button');
+  pin.type = 'button';
+  pin.className = 'lib-pin' + (pinned ? ' pinned' : '');
+  pin.setAttribute('aria-pressed', String(pinned));
+  pin.setAttribute('aria-label', pinned ? 'Unpin' : 'Pin');
+  pin.textContent = pinned ? '★' : '☆';
+  pin.onclick = event => {
+    event.stopPropagation();
+    togglePin(deck.id);
+    renderLibrary();
+  };
+
+  const kebab = document.createElement('button');
+  kebab.type = 'button';
+  kebab.className = 'lib-kebab';
+  kebab.setAttribute('aria-label', 'Deck actions');
+  kebab.textContent = '⋮';
+  kebab.onclick = event => {
+    event.stopPropagation();
+    openDeckMenu(kebab, deck);
+  };
+
+  const name = document.createElement('div');
+  name.className = 'lib-card-name';
+  name.textContent = deck.name;
+
+  const meta = document.createElement('div');
+  meta.className = 'lib-card-meta';
+  const parts = [`v${deck.active_version}/${deck.total_versions}`];
+  if (deck.latest_version_at) parts.push(formatTimestamp(deck.latest_version_at));
+  if (deck.screen_count > 1) parts.push(deck.screen_count + ' screens');
+  meta.textContent = parts.join(' · ');
+
+  card.append(thumb, pin, kebab, name, meta);
+  card.onclick = () => { location.hash = deck.id; };
+  return card;
+}
+
+// --- Library/Home mutations --------------------------------------------------
+// Each mutation calls the server first (no optimistic pre-render), then always
+// calls loadLibrary() again - on both success and failure - so the screen (and
+// the Viewer's decks cache it invalidates) is guaranteed to match the server's
+// record afterward (D0007 3.7). A failed call additionally opens the shared
+// failure dialog.
+async function createGroup() {
+  const name = await promptName({ title: 'New group', label: 'Group name' });
+  if (name === null) return;
+  try {
+    await apiRequest('/api/v1/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    await loadLibrary();
+  } catch (error) {
+    await loadLibrary();
+    await showFailureAlert(error, 'Could not create this group.');
+  }
+}
+
+async function renameGroup(group) {
+  const name = await promptName({ title: 'Rename group', label: 'Group name', initialValue: group.name });
+  if (name === null) return;
+  try {
+    await apiRequest('/api/v1/groups/' + encodeURIComponent(group.id), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    await loadLibrary();
+  } catch (error) {
+    await loadLibrary();
+    await showFailureAlert(error, 'Could not rename this group.');
+  }
+}
+
+async function deleteGroup(group) {
+  const confirmed = await confirmDestructive({
+    title: 'Delete group',
+    bodyHtml: `<p><strong>${esc(group.name)}</strong></p><p>Decks in this group are not deleted; they move to Ungrouped.</p>`,
+    confirmText: 'Delete group',
+  });
+  if (!confirmed) return;
+  try {
+    await apiRequest('/api/v1/groups/' + encodeURIComponent(group.id), { method: 'DELETE' });
+    await loadLibrary();
+  } catch (error) {
+    await loadLibrary();
+    await showFailureAlert(error, 'Could not delete this group.');
+  }
+}
+
+async function renameDeck(deck) {
+  const name = await promptName({ title: 'Rename deck', label: 'Deck name', initialValue: deck.name });
+  if (name === null) return;
+  try {
+    await apiRequest('/api/v1/decks/' + encodeURIComponent(deck.id), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    await loadLibrary();
+  } catch (error) {
+    await loadLibrary();
+    await showFailureAlert(error, 'Could not rename this deck.');
+  }
+}
+
+async function moveDeckToGroup(deck, groupId) {
+  try {
+    await apiRequest('/api/v1/decks/' + encodeURIComponent(deck.id) + '/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group_id: groupId, index: 0 }),
+    });
+    await loadLibrary();
+  } catch (error) {
+    await loadLibrary();
+    await showFailureAlert(error, 'Could not move this deck.');
+  }
+}
+
+function copyDeckLink(deck) {
+  navigator.clipboard.writeText(location.origin + deck.viewer_url);
+}
+
+async function deleteDeck(deck) {
+  const confirmed = await confirmDestructive({
+    title: 'Delete deck',
+    bodyHtml: `<p><strong>${esc(deck.name)}</strong></p><p>Its version history and shared link will be deleted along with it.</p>`,
+    confirmText: 'Delete deck',
+  });
+  if (!confirmed) return;
+  try {
+    await apiRequest('/api/v1/decks/' + encodeURIComponent(deck.id), { method: 'DELETE' });
+    await loadLibrary();
+  } catch (error) {
+    await loadLibrary();
+    await showFailureAlert(error, 'Could not delete this deck.');
+  }
+}
+
+document.getElementById('lib-new-group').onclick = createGroup;
+document.getElementById('lib-search').addEventListener('input', renderLibrary);
+
+// --- Root routing (D0007 3.1 / T0010 §1.1) -----------------------------------
+// No hash -> Library/Home. A hash with a deck id -> that deck's Viewer, exactly
+// like a bookmark. A hash whose deck cannot be found (deleted, typo, stale link)
+// bounces back to Library/Home with a custom alert instead of guessing.
+function showLibraryScreen() {
+  document.getElementById('app').hidden = true;
+  document.getElementById('library').hidden = false;
+  loadLibrary();
+}
+
+function showViewerScreen() {
+  document.getElementById('library').hidden = true;
+  document.getElementById('app').hidden = false;
+}
+
+async function ensureDecksLoaded() {
+  if (decksLoaded) return;
+  try {
+    const response = await fetch('/api/v1/decks');
+    const data = await response.json();
+    decks = data.items || [];
+    decksLoadFailed = false;
+  } catch (error) {
+    decks = [];
+    decksLoadFailed = true;
+  }
+  decksLoaded = true;
+}
+
+async function openDeckFromHash(id) {
+  // Every hash entry - typed/bookmarked link, browser back/forward, or a rail
+  // click re-entering through its own location.hash write - re-checks the
+  // server directly instead of trusting whatever the decks cache currently
+  // holds. Viewer-to-Viewer navigation never passes through Library, so a
+  // decksLoaded cache left over from a previous deck would otherwise still
+  // read as "fresh" while another session deleted or renamed this id in the
+  // meantime (D0007 3.1, 3.7).
+  decksLoaded = false;
+  await ensureDecksLoaded();
+  const deck = decks.find(item => item.id === id);
+  if (!deck) {
+    location.hash = '';
+    showLibraryScreen();
+    await showAlert({
+      title: 'Deck not found',
+      bodyHtml: '<p>This deck no longer exists or is unavailable.</p>',
+    });
+    return;
+  }
+  showViewerScreen();
+  recordRecent(id);
   renderDecks();
-  const wanted = location.hash.slice(1);
-  const first = decks.find(deck => deck.id === wanted) || decks[0];
-  if (first) selectDeck(first.id);
-}).catch(() => {
-  document.getElementById('deck-list').innerHTML = '<div class="empty">Deck list is unavailable.</div>';
-});
+  await selectDeck(id);
+}
+
+function route() {
+  const id = location.hash.slice(1);
+  if (!id) {
+    showLibraryScreen();
+    return;
+  }
+  openDeckFromHash(id);
+}
+
+document.getElementById('to-library').onclick = () => {
+  location.hash = '';
+};
+
+window.addEventListener('hashchange', route);
+route();
 </script>
 </body>
 </html>

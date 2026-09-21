@@ -37,6 +37,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 @dataclass
 class Settings:
     """Tuned through environment variables only. v0 has no config file."""
@@ -51,6 +63,8 @@ class Settings:
     capture_width: int
     capture_height: int
     capture_timeout_ms: int
+    console_write_enabled: bool
+    console_session_ttl_seconds: int
 
     @property
     def decks_dir(self) -> Path:
@@ -76,6 +90,10 @@ class Settings:
             capture_width=_env_int("MIRAGEGLASS_CAPTURE_WIDTH", 1280),
             capture_height=_env_int("MIRAGEGLASS_CAPTURE_HEIGHT", 800),
             capture_timeout_ms=_env_int("MIRAGEGLASS_CAPTURE_TIMEOUT_MS", 20000),
+            console_write_enabled=_env_bool("MIRAGEGLASS_CONSOLE_WRITE", True),
+            console_session_ttl_seconds=max(
+                60, _env_int("MIRAGEGLASS_CONSOLE_SESSION_TTL_SECONDS", 3600)
+            ),
         )
 
     def ensure_dirs(self) -> None:

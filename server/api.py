@@ -13,6 +13,7 @@ import json
 import logging
 import shutil
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -21,18 +22,25 @@ from fastapi import (
     Depends,
     File,
     Form,
-    Header,
     HTTPException,
     Query,
     Response,
     UploadFile,
 )
 from fastapi.responses import FileResponse, RedirectResponse
+from pydantic import BaseModel, StrictInt
 from starlette.background import BackgroundTask
 
 from . import storage, thumbnail
+from .auth import require_management_write, require_operation_token
 from .config import database, settings
-from .repository import DeckRepository, new_deck_id, to_public
+from .repository import (
+    DeckRepository,
+    OrganizationNotFound,
+    new_deck_id,
+    new_group_id,
+    to_public,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,20 +50,64 @@ public_router = APIRouter(tags=["public"])
 # How many times to recompute MAX+1 when a concurrent upload grabs the same
 # version number before giving up.
 _VERSION_CLAIM_ATTEMPTS = 5
+_NAME_MAX_LENGTH = 120
+_DISALLOWED_NAME_CATEGORIES = {"Cc", "Cf", "Cs"}
+
+
+class NamePayload(BaseModel):
+    name: str
+
+
+class DeckMovePayload(BaseModel):
+    group_id: Optional[str] = None
+    index: StrictInt
+
+
+class GroupMovePayload(BaseModel):
+    index: StrictInt
 
 
 def get_repo() -> DeckRepository:
-    if database.sqloader is None:
+    if database.sqloader is None or database.db_instance is None:
         raise HTTPException(status_code=500, detail="database not initialized")
-    return DeckRepository(database.sqloader)
+    return DeckRepository(database.sqloader, database.db_instance)
 
 
-def require_token(authorization: str = Header(default="")) -> None:
-    if not settings.upload_token:
-        raise HTTPException(status_code=500, detail="MIRAGEGLASS_TOKEN is not configured.")
-    expected = f"Bearer {settings.upload_token}"
-    if authorization != expected:
-        raise HTTPException(status_code=401, detail="unauthorized")
+# Keep the original dependency name local so upload routes remain unchanged.
+require_token = require_operation_token
+
+
+def _normalize_name(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_name", "message": "Name cannot be empty."},
+        )
+    if len(normalized) > _NAME_MAX_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_name",
+                "message": f"Name cannot exceed {_NAME_MAX_LENGTH} characters.",
+            },
+        )
+    if any(unicodedata.category(char) in _DISALLOWED_NAME_CATEGORIES for char in normalized):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_name",
+                "message": "Name cannot contain control or formatting characters.",
+            },
+        )
+    return normalized
+
+
+def _organization_not_found(error: OrganizationNotFound) -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail={"code": "not_found", "message": f"{error.entity} not found"},
+    )
 
 
 # --- version helpers ------------------------------------------------------
@@ -282,7 +334,7 @@ def add_version(
 def activate_version(
     deck_id: str,
     version_no: int,
-    _: None = Depends(require_token),
+    _: str = Depends(require_management_write),
     repo: DeckRepository = Depends(get_repo),
 ):
     if not repo.get(deck_id):
@@ -295,6 +347,88 @@ def activate_version(
     # Rollback only moves the active pointer; history stays intact.
     repo.set_active(deck_id, version_no)
     return to_public(repo.get(deck_id))
+
+
+# --- library organization endpoints --------------------------------------
+
+@api_router.get("/library")
+def get_library(repo: DeckRepository = Depends(get_repo)):
+    return repo.list_library()
+
+
+@api_router.post("/groups", status_code=201)
+def create_group(
+    payload: NamePayload,
+    _: str = Depends(require_management_write),
+    repo: DeckRepository = Depends(get_repo),
+):
+    return repo.create_group(new_group_id(), _normalize_name(payload.name))
+
+
+@api_router.patch("/groups/{group_id}")
+def rename_group(
+    group_id: str,
+    payload: NamePayload,
+    _: str = Depends(require_management_write),
+    repo: DeckRepository = Depends(get_repo),
+):
+    try:
+        return repo.rename_group(group_id, _normalize_name(payload.name))
+    except OrganizationNotFound as error:
+        raise _organization_not_found(error)
+
+
+@api_router.delete("/groups/{group_id}", status_code=204)
+def delete_group(
+    group_id: str,
+    _: str = Depends(require_management_write),
+    repo: DeckRepository = Depends(get_repo),
+):
+    try:
+        repo.delete_group(group_id)
+    except OrganizationNotFound as error:
+        raise _organization_not_found(error)
+    return None
+
+
+@api_router.post("/groups/{group_id}/move")
+def move_group(
+    group_id: str,
+    payload: GroupMovePayload,
+    _: str = Depends(require_management_write),
+    repo: DeckRepository = Depends(get_repo),
+):
+    try:
+        return repo.move_group(group_id, payload.index)
+    except OrganizationNotFound as error:
+        raise _organization_not_found(error)
+
+
+@api_router.patch("/decks/{deck_id}")
+def rename_deck(
+    deck_id: str,
+    payload: NamePayload,
+    _: str = Depends(require_management_write),
+    repo: DeckRepository = Depends(get_repo),
+):
+    try:
+        row = repo.rename_deck(deck_id, _normalize_name(payload.name))
+    except OrganizationNotFound as error:
+        raise _organization_not_found(error)
+    return repo.get_library_deck(deck_id) or to_public(row)
+
+
+@api_router.post("/decks/{deck_id}/move")
+def move_deck(
+    deck_id: str,
+    payload: DeckMovePayload,
+    _: str = Depends(require_management_write),
+    repo: DeckRepository = Depends(get_repo),
+):
+    try:
+        return repo.move_deck(deck_id, payload.group_id, payload.index)
+    except OrganizationNotFound as error:
+        raise _organization_not_found(error)
 
 
 # --- deck + version read endpoints ----------------------------------------
@@ -476,7 +610,7 @@ def list_deck_files(
 @api_router.delete("/decks/{deck_id}", status_code=204)
 def delete_deck(
     deck_id: str,
-    _: None = Depends(require_token),
+    _: str = Depends(require_management_write),
     repo: DeckRepository = Depends(get_repo),
 ):
     if not repo.get(deck_id):

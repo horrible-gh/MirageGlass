@@ -9,11 +9,12 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 
 from . import storage
 from .api import api_router, public_router
+from .auth import issue_console_session
 from .config import PROJECT_ROOT, database, settings
 
 logging.basicConfig(level=logging.INFO)
@@ -44,6 +45,8 @@ def healthz():
 
 
 @app.get("/")
-def index():
+def index(request: Request):
     page: Path = WEB_DIR / "index.html"
-    return FileResponse(page)
+    response = FileResponse(page)
+    issue_console_session(request, response)
+    return response

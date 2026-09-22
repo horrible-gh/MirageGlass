@@ -446,21 +446,24 @@ def test_console_session_auth_matrix_expiry_and_renewal(
         headers=same_origin,
     ).status_code == 200
 
-    # Upload surfaces remain operation-token only even with the ambient cookie.
-    denied_create = app_client.post(
+    # The same HttpOnly console session authorizes multipart uploads without
+    # exposing the operation token to JavaScript.
+    console_create = app_client.post(
         "/api/v1/decks",
         headers=same_origin,
         files=_files(deck_zip),
-        data={"name": "denied", "idempotency_key": "console-denied-create"},
+        data={"name": "Console upload", "idempotency_key": "console-upload-create"},
     )
-    assert denied_create.status_code == 401
-    denied_version = app_client.post(
-        f"/api/v1/decks/{deck['id']}/versions",
+    assert console_create.status_code == 201, console_create.text
+    uploaded = console_create.json()
+    console_version = app_client.post(
+        f"/api/v1/decks/{uploaded['id']}/versions",
         headers=same_origin,
         files=_files(deck_zip),
-        data={"idempotency_key": "console-denied-version"},
+        data={"idempotency_key": "console-upload-version"},
     )
-    assert denied_version.status_code == 401
+    assert console_version.status_code == 201, console_version.text
+    assert console_version.json()["version"] == 2
     assert app_client.post(
         "/api/v1/groups",
         headers={"Origin": "https://evil.example"},
@@ -498,7 +501,7 @@ def test_console_session_auth_matrix_expiry_and_renewal(
 
 
 def test_console_write_disabled_keeps_reads_and_operation_token(
-    app_client, auth_headers, monkeypatch
+    app_client, auth_headers, deck_zip, monkeypatch
 ):
     from server.config import settings
 
@@ -513,6 +516,21 @@ def test_console_write_disabled_keeps_reads_and_operation_token(
     )
     assert denied.status_code == 401
     assert denied.json()["detail"]["code"] == "unauthorized"
+    denied_create = app_client.post(
+        "/api/v1/decks",
+        headers=same_origin,
+        files=_files(deck_zip),
+        data={"name": "Disabled upload", "idempotency_key": "disabled-upload-create"},
+    )
+    assert denied_create.status_code == 401
+    token_deck = _create_deck(app_client, auth_headers, "token-upload-disabled")
+    denied_version = app_client.post(
+        f"/api/v1/decks/{token_deck['id']}/versions",
+        headers=same_origin,
+        files=_files(deck_zip),
+        data={"idempotency_key": "disabled-upload-version"},
+    )
+    assert denied_version.status_code == 401
     assert app_client.get("/api/v1/library").status_code == 200
     token_group = _create_group(app_client, auth_headers, "Token while disabled")
     assert app_client.delete(

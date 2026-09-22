@@ -101,8 +101,8 @@
   .lib-shelf h2 { margin: 0 0 8px; font-size: 11px; font-weight: 700; letter-spacing: .2px;
                   text-transform: uppercase; color: #6f7278; }
   .lib-cards { display: flex; flex-wrap: wrap; gap: 12px; }
-  .lib-group { margin-bottom: 18px; }
-  .lib-group-header { display: flex; align-items: center; gap: 6px; padding: 4px; }
+  .lib-group { position: relative; margin-bottom: 18px; }
+  .lib-group-header { display: flex; align-items: center; gap: 6px; padding: 4px; border-radius: 5px; }
   .lib-group-toggle { border: 0; background: none; cursor: pointer; font-size: 12px; width: 20px; color: #45484d; }
   .lib-group-toggle .arrow { display: inline-block; transition: transform 120ms ease; }
   .lib-group.collapsed .lib-group-toggle .arrow { transform: rotate(-90deg); }
@@ -129,8 +129,23 @@
                font-size: 16px; color: #5f6368; padding: 2px 6px; border-radius: 4px; }
   .lib-kebab:hover, .lib-pin:hover { background: #eef1f6; }
   .lib-empty { padding: 20px 4px; color: #8a8a92; font-size: 12px; }
+  .lib-card[data-organizable="true"], .lib-group-drag-handle { cursor: grab; }
+  .lib-card.drag-source, .lib-group.drag-source { opacity: .48; }
+  .lib-card.drop-before { box-shadow: -4px 0 #1a73e8; }
+  .lib-card.drop-after { box-shadow: 4px 0 #1a73e8; }
+  .lib-group.drop-before::before, .lib-group.drop-after::after {
+    content: ''; position: absolute; left: 0; right: 0; height: 3px; border-radius: 2px; background: #1a73e8;
+  }
+  .lib-group.drop-before::before { top: -7px; }
+  .lib-group.drop-after::after { bottom: -7px; }
+  .lib-group-header.deck-drop-target, .lib-group-cards.deck-drop-target {
+    background: #e8f0fe; outline: 2px solid #1a73e8; outline-offset: -2px;
+  }
+  #library.dragging, #library.dragging * { cursor: grabbing !important; }
+  .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+                     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
-  .lib-menu { position: fixed; z-index: 40; min-width: 172px; background: #fff; border: 1px solid #dcdce0;
+  .lib-menu { position: fixed; z-index: 40; min-width: 172px; max-width: calc(100vw - 16px); background: #fff; border: 1px solid #dcdce0;
               border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.16); padding: 4px; }
   .lib-menu-item { display: block; width: 100%; text-align: left; padding: 7px 10px; border: 0; background: none;
                     cursor: pointer; font-size: 12px; border-radius: 4px; color: #202124; }
@@ -156,8 +171,9 @@
   #dialog-body p { margin: 0 0 8px; }
   #dialog-body p:last-child { margin-bottom: 0; }
   .dialog-field { display: block; font-size: 12px; font-weight: 650; color: #45484d; }
-  .dialog-field input { display: block; width: 100%; margin-top: 6px; padding: 7px 9px; border: 1px solid #c7c9cd;
-                         border-radius: 5px; font-size: 13px; color: #202124; }
+  .dialog-field input, .dialog-field select { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 7px 9px;
+                         border: 1px solid #c7c9cd; border-radius: 5px; font-size: 13px; color: #202124; background: #fff; }
+  .dialog-field + .dialog-field { margin-top: 12px; }
   #dialog-foot { flex: none; display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px;
                  border-top: 1px solid #e8eaed; }
   #dialog-foot button { padding: 7px 14px; border-radius: 5px; font-size: 13px; cursor: pointer; }
@@ -175,7 +191,17 @@
     #bar { gap: 6px; }
     #copy { display: none; }
     #compare-controls { justify-content: flex-start; overflow-x: auto; }
-    .lib-card { width: 46%; }
+    #lib-bar { gap: 8px; padding: 8px; flex-wrap: wrap; }
+    #lib-search { min-width: 0; }
+    #lib-scroll { padding-left: 8px; padding-right: 8px; }
+    .lib-group-cards { padding-left: 8px; gap: 8px; }
+    .lib-card { width: calc(50% - 4px); min-width: 0; }
+    #dialog-overlay { padding: 8px; }
+  }
+  @media (max-width: 390px) {
+    #lib-bar .lib-title { width: 100%; }
+    #lib-search { max-width: none; }
+    #lib-new-group { padding-left: 9px; padding-right: 9px; }
   }
 </style>
 </head>
@@ -239,6 +265,7 @@
     </section>
     <div id="lib-groups"><div class="lib-empty">Loading...</div></div>
   </div>
+  <div id="lib-live" class="visually-hidden" aria-live="polite"></div>
 </div>
 <div id="dialog-overlay" hidden>
   <div id="dialog-box" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
@@ -782,7 +809,7 @@ let activeDialog = null;
 
 function dialogTrapKeydown(event) {
   if (event.key !== 'Tab') return;
-  const focusables = Array.from(dialogEls.box.querySelectorAll('button, input'))
+  const focusables = Array.from(dialogEls.box.querySelectorAll('button, input, select'))
     .filter(el => !el.disabled && el.offsetParent !== null);
   if (!focusables.length) return;
   const first = focusables[0];
@@ -854,7 +881,11 @@ dialogEls.closeBtn.onclick = () => closeDialog({ action: 'cancel' });
 dialogEls.cancelBtn.onclick = () => closeDialog({ action: 'cancel' });
 dialogEls.confirmBtn.onclick = () => {
   const input = dialogEls.body.querySelector('input');
-  closeDialog({ action: 'confirm', value: input ? input.value.trim() : true });
+  const values = {};
+  dialogEls.body.querySelectorAll('[data-dialog-field]').forEach(field => {
+    values[field.dataset.dialogField] = field.value;
+  });
+  closeDialog({ action: 'confirm', value: input ? input.value.trim() : true, values });
 };
 // The overlay backdrop intentionally has no click handler at all: a click there
 // (or anywhere outside #dialog-box) does nothing, per D0007 6.4.
@@ -880,21 +911,41 @@ async function showAlert({ title, bodyHtml }) {
 // --- Lightweight kebab/context menus (not the dialog above; ordinary menu ---
 // --- conventions apply, so outside click / Esc close them). -----------------
 let openMenus = [];
+let menuOpener = null;
 
-function closeMenu() {
+function closeMenu(restoreFocus = false) {
   openMenus.forEach(menu => menu.remove());
   openMenus = [];
   document.removeEventListener('mousedown', onOutsideMenuClick, true);
   document.removeEventListener('keydown', onMenuKeydown, true);
+  if (restoreFocus && menuOpener && menuOpener.isConnected) menuOpener.focus();
+  menuOpener = null;
 }
 
 function onOutsideMenuClick(event) {
   if (openMenus.some(menu => menu.contains(event.target))) return;
-  closeMenu();
+  closeMenu(false);
 }
 
 function onMenuKeydown(event) {
-  if (event.key === 'Escape') closeMenu();
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeMenu(true);
+    return;
+  }
+  const menu = document.activeElement && document.activeElement.closest('.lib-menu');
+  if (!menu) return;
+  const items = Array.from(menu.querySelectorAll('.lib-menu-item:not(:disabled)'));
+  if (!items.length) return;
+  let index = items.indexOf(document.activeElement);
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const step = event.key === 'ArrowDown' ? 1 : -1;
+    items[(index + step + items.length) % items.length].focus();
+  } else if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault();
+    items[event.key === 'Home' ? 0 : items.length - 1].focus();
+  }
 }
 
 function positionMenu(menu, anchorEl, isSubmenu) {
@@ -911,13 +962,20 @@ function positionMenu(menu, anchorEl, isSubmenu) {
 }
 
 function openMenu(anchorEl, items, isSubmenu) {
-  if (!isSubmenu) closeMenu();
+  if (!isSubmenu) {
+    closeMenu(false);
+    menuOpener = anchorEl;
+  } else {
+    while (openMenus.length > 1) openMenus.pop().remove();
+  }
   const menu = document.createElement('div');
   menu.className = 'lib-menu';
+  menu.setAttribute('role', 'menu');
   items.forEach(item => {
     if (item.separator) {
       const sep = document.createElement('div');
       sep.className = 'lib-menu-sep';
+      sep.setAttribute('role', 'separator');
       menu.appendChild(sep);
       return;
     }
@@ -926,9 +984,11 @@ function openMenu(anchorEl, items, isSubmenu) {
     btn.className = 'lib-menu-item'
       + (item.destructive ? ' destructive' : '')
       + (item.submenu ? ' submenu-parent' : '');
+    btn.setAttribute('role', 'menuitem');
     btn.textContent = item.label;
     btn.disabled = !!item.disabled;
     if (item.submenu) {
+      btn.setAttribute('aria-haspopup', 'menu');
       btn.onclick = event => {
         event.stopPropagation();
         openMenu(btn, item.submenu, true);
@@ -936,7 +996,7 @@ function openMenu(anchorEl, items, isSubmenu) {
     } else if (!item.disabled) {
       btn.onclick = event => {
         event.stopPropagation();
-        closeMenu();
+        closeMenu(false);
         item.onClick();
       };
     }
@@ -945,11 +1005,11 @@ function openMenu(anchorEl, items, isSubmenu) {
   document.body.appendChild(menu);
   positionMenu(menu, anchorEl, isSubmenu);
   openMenus.push(menu);
+  const first = menu.querySelector('.lib-menu-item:not(:disabled)');
+  if (first) first.focus();
   if (!isSubmenu) {
-    setTimeout(() => {
-      document.addEventListener('mousedown', onOutsideMenuClick, true);
-      document.addEventListener('keydown', onMenuKeydown, true);
-    }, 0);
+    document.addEventListener('mousedown', onOutsideMenuClick, true);
+    document.addEventListener('keydown', onMenuKeydown, true);
   }
 }
 
@@ -1005,28 +1065,35 @@ function toggleCollapsed(id) {
 
 // --- Library/Home data + rendering ------------------------------------------
 let libraryData = null;
+let libraryLoadGeneration = 0;
+let organizationMoveInFlight = false;
+let dragState = null;
+let suppressDeckClickUntil = 0;
 
 // Every read of the library record - Library/Home entry as well as each
 // mutation's post-write reload - also drops the Viewer's separate
-// GET /api/v1/decks cache, so Library's own next render never shows a deck
-// this tab's mutation just removed or renamed. The Viewer's own re-fetch on
-// every hash entry (see openDeckFromHash) is what actually guarantees a
-// stale identity/name is never reused there, regardless of whether Library
-// was visited in between (D0007 3.1, 3.7).
+// GET /api/v1/decks cache. A generation guard makes overlapping reads
+// latest-wins, so an older response can never overwrite a newer server record.
 async function loadLibrary() {
+  const generation = ++libraryLoadGeneration;
   decksLoaded = false;
   const container = document.getElementById('lib-groups');
+  let nextData;
   try {
-    libraryData = await apiRequest('/api/v1/library');
+    nextData = await apiRequest('/api/v1/library');
   } catch (error) {
+    if (generation !== libraryLoadGeneration) return true;
     libraryData = null;
     container.innerHTML = '<div class="lib-empty">Library is unavailable.</div>';
     document.getElementById('lib-pinned-row').hidden = true;
     document.getElementById('lib-recent-row').hidden = true;
-    return;
+    return false;
   }
+  if (generation !== libraryLoadGeneration) return true;
+  libraryData = nextData;
   pruneStaleState();
   renderLibrary();
+  return true;
 }
 
 // D0007 §7: personal state pointing at a deck/group the server no longer has
@@ -1068,10 +1135,9 @@ function renderLibrary() {
   renderGroups(document.getElementById('lib-search').value.trim().toLowerCase());
 }
 
-// D0007 6.2 / T0010 §6 search order: (1) a group-name match keeps every deck in
-// that group regardless of their own names; (2) otherwise only decks whose own
-// name matches survive, and the group is hidden entirely if none do. Ungrouped
-// is never itself an entity, so it always takes branch (2).
+// Search narrows only what is visible. Drop indexes are computed later from the
+// complete server-ordered libraryData lists and stable target ids, never from a
+// filtered DOM ordinal.
 function renderGroups(query) {
   const container = document.getElementById('lib-groups');
   container.innerHTML = '';
@@ -1085,8 +1151,6 @@ function renderGroups(query) {
       visibleDecks = group.decks.filter(deck => deck.name.toLowerCase().includes(query));
       if (!visibleDecks.length) return;
     }
-    // A stored collapse preference never hides a live search match: matches
-    // render expanded without touching the saved preference itself.
     container.appendChild(buildGroupSection(group, visibleDecks, Boolean(query)));
     rendered++;
   });
@@ -1099,14 +1163,106 @@ function renderGroups(query) {
     rendered++;
   }
 
-  if (!rendered) {
-    container.innerHTML = '<div class="lib-empty">No matches.</div>';
-  }
+  if (!rendered) container.innerHTML = '<div class="lib-empty">No matches.</div>';
 }
 
-function buildGroupHeader(name, expanded, kebabItems) {
+function clearDropHighlights() {
+  document.querySelectorAll('.drop-before, .drop-after, .deck-drop-target').forEach(element => {
+    element.classList.remove('drop-before', 'drop-after', 'deck-drop-target');
+  });
+}
+
+function showDropHighlight(element, className) {
+  clearDropHighlights();
+  element.classList.add(className);
+}
+
+function startLibraryDrag(event, state, sourceElement) {
+  if (organizationMoveInFlight) {
+    event.preventDefault();
+    return;
+  }
+  dragState = { ...state, sourceElement };
+  sourceElement.classList.add('drag-source');
+  document.getElementById('library').classList.add('dragging');
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', state.id);
+}
+
+function finishLibraryDrag() {
+  if (dragState && dragState.sourceElement) dragState.sourceElement.classList.remove('drag-source');
+  if (dragState && dragState.kind === 'deck') suppressDeckClickUntil = Date.now() + 300;
+  dragState = null;
+  clearDropHighlights();
+  document.getElementById('library').classList.remove('dragging');
+}
+
+function libraryDecksFor(groupId, data = libraryData) {
+  if (!data) return [];
+  if (groupId === null) return data.ungrouped.decks;
+  const group = data.groups.find(item => item.id === groupId);
+  return group ? group.decks : [];
+}
+
+function calculateDeckIndex(deckId, groupId, targetId, position) {
+  const ids = libraryDecksFor(groupId).map(deck => deck.id).filter(id => id !== deckId);
+  if (targetId === null) return position === 'start' ? 0 : ids.length;
+  const targetIndex = ids.indexOf(targetId);
+  if (targetIndex === -1) return ids.length;
+  return targetIndex + (position === 'after' ? 1 : 0);
+}
+
+function calculateGroupIndex(groupId, targetId, position) {
+  const ids = libraryData.groups.map(group => group.id).filter(id => id !== groupId);
+  const targetIndex = ids.indexOf(targetId);
+  if (targetIndex === -1) return ids.length;
+  return targetIndex + (position === 'after' ? 1 : 0);
+}
+
+function isDeckMoveNoop(deckId, groupId, index) {
+  const deck = findLibraryDeck(deckId);
+  if (!deck || deck.group_id !== groupId) return false;
+  return libraryDecksFor(groupId).findIndex(item => item.id === deckId) === index;
+}
+
+function isGroupMoveNoop(groupId, index) {
+  return libraryData.groups.findIndex(group => group.id === groupId) === index;
+}
+
+function dropDeck(event, groupId, targetId, position) {
+  if (!dragState || dragState.kind !== 'deck') return;
+  event.preventDefault();
+  event.stopPropagation();
+  const deckId = dragState.id;
+  const index = calculateDeckIndex(deckId, groupId, targetId, position);
+  finishLibraryDrag();
+  if (isDeckMoveNoop(deckId, groupId, index)) return;
+  void dispatchOrganizationMove({ kind: 'deck', id: deckId, groupId, index });
+}
+
+function dropGroup(event, targetId, position) {
+  if (!dragState || dragState.kind !== 'group') return;
+  event.preventDefault();
+  event.stopPropagation();
+  const groupId = dragState.id;
+  const index = calculateGroupIndex(groupId, targetId, position);
+  finishLibraryDrag();
+  if (isGroupMoveNoop(groupId, index)) return;
+  void dispatchOrganizationMove({ kind: 'group', id: groupId, index });
+}
+
+function buildGroupHeader(name, expanded, kebabItems, groupId) {
   const header = document.createElement('div');
   header.className = 'lib-group-header';
+  header.dataset.deckDropGroup = groupId === null ? '' : groupId;
+  header.ondragover = event => {
+    if (!dragState || dragState.kind !== 'deck') return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'move';
+    showDropHighlight(header, 'deck-drop-target');
+  };
+  header.ondrop = event => dropDeck(event, groupId, null, 'start');
 
   const toggle = document.createElement('button');
   toggle.type = 'button';
@@ -1118,14 +1274,15 @@ function buildGroupHeader(name, expanded, kebabItems) {
   const nameEl = document.createElement('span');
   nameEl.className = 'lib-group-name';
   nameEl.textContent = name;
-
   header.append(toggle, nameEl);
 
+  let kebab = null;
   if (kebabItems) {
-    const kebab = document.createElement('button');
+    kebab = document.createElement('button');
     kebab.type = 'button';
     kebab.className = 'lib-group-kebab';
     kebab.setAttribute('aria-label', 'Group actions');
+    kebab.setAttribute('aria-haspopup', 'menu');
     kebab.textContent = '⋮';
     kebab.onclick = event => {
       event.stopPropagation();
@@ -1133,22 +1290,56 @@ function buildGroupHeader(name, expanded, kebabItems) {
     };
     header.appendChild(kebab);
   }
-
-  return { header, toggle };
+  return { header, toggle, nameEl, kebab };
 }
 
-function buildCardsRow(decksToShow, emptyText) {
+function buildCardsRow(decksToShow, emptyText, groupId) {
   const cards = document.createElement('div');
   cards.className = 'lib-group-cards';
+  cards.dataset.deckDropGroup = groupId === null ? '' : groupId;
+  cards.ondragover = event => {
+    if (!dragState || dragState.kind !== 'deck') return;
+    if (event.target.closest('.lib-card')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'move';
+    showDropHighlight(cards, 'deck-drop-target');
+  };
+  cards.ondrop = event => {
+    if (event.target.closest('.lib-card')) return;
+    dropDeck(event, groupId, null, 'end');
+  };
   if (!decksToShow.length) {
     const empty = document.createElement('div');
     empty.className = 'lib-empty';
     empty.textContent = emptyText;
     cards.appendChild(empty);
   } else {
-    decksToShow.forEach(deck => cards.appendChild(buildDeckCard(deck)));
+    decksToShow.forEach(deck => cards.appendChild(buildDeckCard(deck, { organizable: true, groupId })));
   }
   return cards;
+}
+
+function attachGroupDrag(section, nameEl, group) {
+  nameEl.classList.add('lib-group-drag-handle');
+  nameEl.draggable = true;
+  nameEl.dataset.groupDragId = group.id;
+  nameEl.ondragstart = event => startLibraryDrag(event, { kind: 'group', id: group.id }, section);
+  nameEl.ondragend = finishLibraryDrag;
+  section.ondragover = event => {
+    if (!dragState || dragState.kind !== 'group') return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    const rect = section.getBoundingClientRect();
+    const position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+    showDropHighlight(section, position === 'before' ? 'drop-before' : 'drop-after');
+  };
+  section.ondrop = event => {
+    if (!dragState || dragState.kind !== 'group') return;
+    const rect = section.getBoundingClientRect();
+    const position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+    dropGroup(event, group.id, position);
+  };
 }
 
 function buildGroupSection(group, decksToShow, forceExpanded) {
@@ -1157,19 +1348,20 @@ function buildGroupSection(group, decksToShow, forceExpanded) {
   section.className = 'lib-group' + (collapsed ? ' collapsed' : '');
   section.dataset.groupId = group.id;
 
-  const { header, toggle } = buildGroupHeader(group.name, !collapsed, [
+  const { header, toggle, nameEl } = buildGroupHeader(group.name, !collapsed, [
     { label: 'Rename', onClick: () => renameGroup(group) },
+    { label: 'Reorder…', onClick: () => chooseGroupReorder(group) },
     { label: 'Delete', destructive: true, onClick: () => deleteGroup(group) },
-  ]);
+  ], group.id);
   toggle.onclick = () => {
     toggleCollapsed(group.id);
     const nowCollapsed = forceExpanded ? false : isCollapsed(group.id);
     section.classList.toggle('collapsed', nowCollapsed);
     toggle.setAttribute('aria-expanded', String(!nowCollapsed));
   };
-
+  attachGroupDrag(section, nameEl, group);
   section.appendChild(header);
-  section.appendChild(buildCardsRow(decksToShow, 'No decks in this group.'));
+  section.appendChild(buildCardsRow(decksToShow, 'No decks in this group.', group.id));
   return section;
 }
 
@@ -1177,49 +1369,63 @@ function buildUngroupedSection(decksToShow, forceExpanded) {
   const section = document.createElement('section');
   const collapsed = !forceExpanded && isCollapsed(UNGROUPED_COLLAPSE_KEY);
   section.className = 'lib-group' + (collapsed ? ' collapsed' : '');
+  section.dataset.groupId = '';
 
-  // Ungrouped has no kebab menu: it is a virtual section, not a real group
-  // (no rename/delete - D0007 §1/§6.2).
-  const { header, toggle } = buildGroupHeader('Ungrouped', !collapsed, null);
+  const { header, toggle } = buildGroupHeader('Ungrouped', !collapsed, null, null);
   toggle.onclick = () => {
     toggleCollapsed(UNGROUPED_COLLAPSE_KEY);
     const nowCollapsed = forceExpanded ? false : isCollapsed(UNGROUPED_COLLAPSE_KEY);
     section.classList.toggle('collapsed', nowCollapsed);
     toggle.setAttribute('aria-expanded', String(!nowCollapsed));
   };
-
   section.appendChild(header);
-  section.appendChild(buildCardsRow(decksToShow, 'No decks.'));
+  section.appendChild(buildCardsRow(decksToShow, 'No decks.', null));
   return section;
-}
-
-function buildMoveSubmenu(deck) {
-  const items = [];
-  if (deck.group_id !== null) {
-    items.push({ label: 'Ungrouped', onClick: () => moveDeckToGroup(deck, null) });
-  }
-  (libraryData ? libraryData.groups : []).forEach(group => {
-    if (group.id === deck.group_id) return;
-    items.push({ label: group.name, onClick: () => moveDeckToGroup(deck, group.id) });
-  });
-  if (!items.length) items.push({ label: 'No other groups', disabled: true });
-  return items;
 }
 
 function openDeckMenu(anchor, deck) {
   openMenu(anchor, [
     { label: 'Rename', onClick: () => renameDeck(deck) },
-    { label: 'Move to group', submenu: buildMoveSubmenu(deck) },
+    { label: 'Move…', onClick: () => chooseDeckMove(deck) },
     { label: 'Copy link', onClick: () => copyDeckLink(deck) },
     { separator: true },
     { label: 'Delete', destructive: true, onClick: () => deleteDeck(deck) },
   ]);
 }
 
-function buildDeckCard(deck) {
+function buildDeckCard(deck, options = {}) {
+  const organizable = options.organizable === true;
+  const groupId = options.groupId === undefined ? deck.group_id : options.groupId;
   const card = document.createElement('div');
   card.className = 'lib-card';
   card.dataset.deckId = deck.id;
+  card.dataset.groupId = groupId === null ? '' : groupId;
+  card.dataset.organizable = String(organizable);
+  if (organizable) {
+    card.draggable = true;
+    card.ondragstart = event => {
+      if (event.target.closest('button')) {
+        event.preventDefault();
+        return;
+      }
+      startLibraryDrag(event, { kind: 'deck', id: deck.id, sourceGroupId: groupId }, card);
+    };
+    card.ondragend = finishLibraryDrag;
+    card.ondragover = event => {
+      if (!dragState || dragState.kind !== 'deck' || dragState.id === deck.id) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = 'move';
+      const rect = card.getBoundingClientRect();
+      const position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+      showDropHighlight(card, position === 'before' ? 'drop-before' : 'drop-after');
+    };
+    card.ondrop = event => {
+      const rect = card.getBoundingClientRect();
+      const position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+      dropDeck(event, groupId, deck.id, position);
+    };
+  }
 
   const thumb = document.createElement('div');
   thumb.className = 'lib-card-thumb';
@@ -1235,6 +1441,7 @@ function buildDeckCard(deck) {
   const pinned = isPinned(deck.id);
   const pin = document.createElement('button');
   pin.type = 'button';
+  pin.draggable = false;
   pin.className = 'lib-pin' + (pinned ? ' pinned' : '');
   pin.setAttribute('aria-pressed', String(pinned));
   pin.setAttribute('aria-label', pinned ? 'Unpin' : 'Pin');
@@ -1247,8 +1454,10 @@ function buildDeckCard(deck) {
 
   const kebab = document.createElement('button');
   kebab.type = 'button';
+  kebab.draggable = false;
   kebab.className = 'lib-kebab';
   kebab.setAttribute('aria-label', 'Deck actions');
+  kebab.setAttribute('aria-haspopup', 'menu');
   kebab.textContent = '⋮';
   kebab.onclick = event => {
     event.stopPropagation();
@@ -1267,16 +1476,195 @@ function buildDeckCard(deck) {
   meta.textContent = parts.join(' · ');
 
   card.append(thumb, pin, kebab, name, meta);
-  card.onclick = () => { location.hash = deck.id; };
+  card.onclick = () => {
+    if (Date.now() < suppressDeckClickUntil) return;
+    location.hash = deck.id;
+  };
   return card;
 }
 
+function dialogGroupValue(groupId) {
+  return groupId === null ? 'ungrouped' : 'group:' + groupId;
+}
+
+function parseDialogGroupValue(value) {
+  return value === 'ungrouped' ? null : value.slice('group:'.length);
+}
+
+function fillDeckPositionOptions(select, deck, groupId) {
+  const siblings = libraryDecksFor(groupId).filter(item => item.id !== deck.id);
+  select.innerHTML = '';
+  siblings.forEach((item, index) => {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = `${index + 1} — before ${item.name}`;
+    select.appendChild(option);
+  });
+  const end = document.createElement('option');
+  end.value = String(siblings.length);
+  end.textContent = `${siblings.length + 1} — end of section`;
+  select.appendChild(end);
+  const currentIndex = libraryDecksFor(deck.group_id).findIndex(item => item.id === deck.id);
+  select.value = String(groupId === deck.group_id ? currentIndex : siblings.length);
+}
+
+async function chooseDeckMove(deck) {
+  if (!libraryData || organizationMoveInFlight) return;
+  const groupOptions = [
+    ...libraryData.groups.map((group, index) =>
+      `<option value="${esc(dialogGroupValue(group.id))}">${index + 1} — ${esc(group.name)}</option>`),
+    `<option value="ungrouped">${libraryData.groups.length + 1} — Ungrouped</option>`,
+  ].join('');
+  const pending = openGenericDialog({
+    title: 'Move deck',
+    bodyHtml: `<label class="dialog-field">Destination<select id="dialog-move-group" data-dialog-field="group">${groupOptions}</select></label>`
+      + '<label class="dialog-field">Position<select id="dialog-move-index" data-dialog-field="index"></select></label>',
+    confirmText: 'Move',
+  });
+  const groupSelect = document.getElementById('dialog-move-group');
+  const indexSelect = document.getElementById('dialog-move-index');
+  groupSelect.value = dialogGroupValue(deck.group_id);
+  const refreshPositions = () => fillDeckPositionOptions(indexSelect, deck, parseDialogGroupValue(groupSelect.value));
+  groupSelect.addEventListener('change', refreshPositions);
+  refreshPositions();
+  const result = await pending;
+  if (result.action !== 'confirm') {
+    focusLibraryItem('deck', deck.id);
+    return;
+  }
+  await dispatchOrganizationMove({
+    kind: 'deck',
+    id: deck.id,
+    groupId: parseDialogGroupValue(result.values.group),
+    index: Number(result.values.index),
+  });
+}
+
+async function chooseGroupReorder(group) {
+  if (!libraryData || organizationMoveInFlight) return;
+  const others = libraryData.groups.filter(item => item.id !== group.id);
+  const options = others.map((item, index) =>
+    `<option value="${index}">${index + 1} — before ${esc(item.name)}</option>`);
+  options.push(`<option value="${others.length}">${others.length + 1} — end of groups</option>`);
+  const currentIndex = libraryData.groups.findIndex(item => item.id === group.id);
+  const pending = openGenericDialog({
+    title: 'Reorder group',
+    bodyHtml: `<label class="dialog-field">Position<select id="dialog-group-index" data-dialog-field="index">${options.join('')}</select></label>`,
+    confirmText: 'Move',
+  });
+  document.getElementById('dialog-group-index').value = String(currentIndex);
+  const result = await pending;
+  if (result.action !== 'confirm') {
+    focusLibraryItem('group', group.id);
+    return;
+  }
+  await dispatchOrganizationMove({ kind: 'group', id: group.id, index: Number(result.values.index) });
+}
+
+function cloneLibraryRecord(data) {
+  return JSON.parse(JSON.stringify(data));
+}
+
+function normalizeDeckSection(decks, groupId) {
+  decks.forEach((deck, index) => {
+    deck.group_id = groupId;
+    deck.sort_order = index;
+  });
+}
+
+function applyOptimisticMove(command) {
+  if (command.kind === 'group') {
+    const from = libraryData.groups.findIndex(group => group.id === command.id);
+    if (from === -1) return;
+    const [group] = libraryData.groups.splice(from, 1);
+    libraryData.groups.splice(Math.max(0, Math.min(command.index, libraryData.groups.length)), 0, group);
+    libraryData.groups.forEach((item, index) => { item.sort_order = index; });
+    return;
+  }
+  let moved = null;
+  for (const group of libraryData.groups) {
+    const index = group.decks.findIndex(deck => deck.id === command.id);
+    if (index !== -1) moved = group.decks.splice(index, 1)[0];
+    normalizeDeckSection(group.decks, group.id);
+  }
+  const ungroupedIndex = libraryData.ungrouped.decks.findIndex(deck => deck.id === command.id);
+  if (ungroupedIndex !== -1) moved = libraryData.ungrouped.decks.splice(ungroupedIndex, 1)[0];
+  normalizeDeckSection(libraryData.ungrouped.decks, null);
+  if (!moved) return;
+  const target = libraryDecksFor(command.groupId);
+  target.splice(Math.max(0, Math.min(command.index, target.length)), 0, moved);
+  normalizeDeckSection(target, command.groupId);
+}
+
+function focusLibraryItem(kind, id) {
+  const escapedId = CSS.escape(id);
+  const selector = kind === 'deck'
+    ? `#lib-groups .lib-card[data-deck-id="${escapedId}"] .lib-kebab`
+    : `#lib-groups .lib-group[data-group-id="${escapedId}"] .lib-group-kebab`;
+  const target = document.querySelector(selector);
+  if (target) target.focus();
+}
+
+function announceLibrary(message) {
+  const live = document.getElementById('lib-live');
+  live.textContent = '';
+  requestAnimationFrame(() => { live.textContent = message; });
+}
+
+async function dispatchOrganizationMove(command) {
+  if (!libraryData || organizationMoveInFlight) return false;
+  if (command.kind === 'deck' && isDeckMoveNoop(command.id, command.groupId, command.index)) {
+    focusLibraryItem('deck', command.id);
+    return true;
+  }
+  if (command.kind === 'group' && isGroupMoveNoop(command.id, command.index)) {
+    focusLibraryItem('group', command.id);
+    return true;
+  }
+
+  organizationMoveInFlight = true;
+  const snapshot = cloneLibraryRecord(libraryData);
+  applyOptimisticMove(command);
+  renderLibrary();
+  let moveError = null;
+  try {
+    const url = command.kind === 'deck'
+      ? '/api/v1/decks/' + encodeURIComponent(command.id) + '/move'
+      : '/api/v1/groups/' + encodeURIComponent(command.id) + '/move';
+    const body = command.kind === 'deck'
+      ? { group_id: command.groupId, index: command.index }
+      : { index: command.index };
+    await apiRequest(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    moveError = error;
+    libraryData = snapshot;
+    renderLibrary();
+  }
+
+  const refreshed = await loadLibrary();
+  organizationMoveInFlight = false;
+  if (!refreshed) {
+    await showFailureAlert(moveError || new Error('The updated library could not be reloaded.'), 'Could not refresh the library.');
+    return false;
+  }
+  if (moveError) {
+    await showFailureAlert(moveError, command.kind === 'deck' ? 'Could not move this deck.' : 'Could not reorder this group.');
+    focusLibraryItem(command.kind, command.id);
+    announceLibrary('Move failed. Server order restored.');
+    return false;
+  }
+  focusLibraryItem(command.kind, command.id);
+  announceLibrary(command.kind === 'deck' ? 'Deck moved.' : 'Group reordered.');
+  return true;
+}
+
 // --- Library/Home mutations --------------------------------------------------
-// Each mutation calls the server first (no optimistic pre-render), then always
-// calls loadLibrary() again - on both success and failure - so the screen (and
-// the Viewer's decks cache it invalidates) is guaranteed to match the server's
-// record afterward (D0007 3.7). A failed call additionally opens the shared
-// failure dialog.
+// CRUD calls reload on both outcomes. Organization moves use the optimistic,
+// serialized dispatcher above, but also finish from a fresh server record.
 async function createGroup() {
   const name = await promptName({ title: 'New group', label: 'Group name' });
   if (name === null) return;
@@ -1341,19 +1729,6 @@ async function renameDeck(deck) {
   }
 }
 
-async function moveDeckToGroup(deck, groupId) {
-  try {
-    await apiRequest('/api/v1/decks/' + encodeURIComponent(deck.id) + '/move', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ group_id: groupId, index: 0 }),
-    });
-    await loadLibrary();
-  } catch (error) {
-    await loadLibrary();
-    await showFailureAlert(error, 'Could not move this deck.');
-  }
-}
 
 function copyDeckLink(deck) {
   navigator.clipboard.writeText(location.origin + deck.viewer_url);

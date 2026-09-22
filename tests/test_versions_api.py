@@ -206,6 +206,29 @@ def test_version_scoped_view_redirect_and_failure_cases(app_client, auth_headers
     assert rejected.status_code == 400
     assert app_client.get(f"/v/{deck_id}/v2/").status_code == 409
 
+def test_download_round_trip_adds_a_new_active_version(app_client, auth_headers):
+    deck = _create_deck(app_client, auth_headers, "round trip source", "ver-round-trip")
+    deck_id = deck["id"]
+
+    downloaded = app_client.get(f"/api/v1/decks/{deck_id}/download?version=1")
+    assert downloaded.status_code == 200, downloaded.text
+    uploaded = app_client.post(
+        f"/api/v1/decks/{deck_id}/versions",
+        headers=auth_headers,
+        files=_files(downloaded.content),
+        data={"idempotency_key": "ver-round-trip-2"},
+    )
+
+    assert uploaded.status_code == 201, uploaded.text
+    assert uploaded.json()["version"] == 2
+    history = app_client.get(f"/api/v1/decks/{deck_id}/versions").json()
+    assert history["active_version"] == 2
+    assert [item["version"] for item in history["items"]] == [1, 2]
+    with zipfile.ZipFile(io.BytesIO(app_client.get(
+        f"/api/v1/decks/{deck_id}/download?version=2"
+    ).content)) as archive:
+        assert b"round trip source" in archive.read("index.html")
+
 def test_rollback_activates_an_earlier_version(app_client, auth_headers):
     deck = _create_deck(app_client, auth_headers, "page one", "ver-roll")
     deck_id = deck["id"]

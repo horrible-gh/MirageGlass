@@ -1,8 +1,8 @@
 """Deck create/list/delete, deck version management, and the public serving routes.
 
-Asymmetric auth: creating a deck, adding a version, rolling back and deleting all
-require a Bearer token; listing, single fetch, version listing, downloads, the
-deck viewer and thumbnails are open. The endpoints are plain `def` - FastAPI runs
+Write auth accepts either the configured operation Bearer token or the first-party
+console session; listing, single fetch, version listing, downloads, the deck viewer
+and thumbnails are open. The endpoints are plain `def` - FastAPI runs
 them in a threadpool, so the synchronous sqloader and the Playwright sync API can
 be used as-is.
 """
@@ -32,7 +32,7 @@ from pydantic import BaseModel, StrictInt
 from starlette.background import BackgroundTask
 
 from . import storage, thumbnail
-from .auth import require_management_write, require_operation_token
+from .auth import require_management_write
 from .config import database, settings
 from .repository import (
     DeckRepository,
@@ -72,9 +72,6 @@ def get_repo() -> DeckRepository:
         raise HTTPException(status_code=500, detail="database not initialized")
     return DeckRepository(database.sqloader, database.db_instance)
 
-
-# Keep the original dependency name local so upload routes remain unchanged.
-require_token = require_operation_token
 
 
 def _normalize_name(value: str) -> str:
@@ -261,7 +258,7 @@ def create_deck(
     file: UploadFile = File(...),
     name: str = Form(...),
     idempotency_key: str = Form(...),
-    _: None = Depends(require_token),
+    _: str = Depends(require_management_write),
     repo: DeckRepository = Depends(get_repo),
 ):
     # 1) Idempotency key first - an automated uploader firing the same request
@@ -305,7 +302,7 @@ def add_version(
     response: Response,
     file: UploadFile = File(...),
     idempotency_key: str = Form(...),
-    _: None = Depends(require_token),
+    _: str = Depends(require_management_write),
     repo: DeckRepository = Depends(get_repo),
 ):
     # name is intentionally not accepted here: the deck name is stable and a

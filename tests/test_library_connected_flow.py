@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -545,5 +546,168 @@ def test_library_connected_flow_persists_rolls_back_and_preserves_viewer(connect
 
             assert page_errors == []
             assert console_errors == []
+            context.close()
+            browser.close()
+
+def test_console_upload_download_round_trip_and_failure_ui(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    manifest = {
+        "screens": [
+            {"key": "overview", "tag": "Overview", "entry": "overview/index.html"},
+            {"key": "details", "tag": "Details", "entry": "details/index.html"},
+        ]
+    }
+
+    def deck_payload(overview: str, details: str) -> bytes:
+        return _zip(
+            {
+                "screens.json": json.dumps(manifest),
+                "index.html": "<!doctype html><html><body>Deck root</body></html>",
+                "overview/index.html": f"<!doctype html><html><body>{overview}</body></html>",
+                "details/index.html": f"<!doctype html><html><body>{details}</body></html>",
+            }
+        )
+
+    version_one = deck_payload("overview one", "details one")
+    version_two = deck_payload("overview one", "details two")
+    version_three = deck_payload("overview three", "details two")
+
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        older = _create_deck(client, "Older deck", "ui-upload-older")
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1280, "height": 900})
+            page = context.new_page()
+            upload_requests: list[str] = []
+
+            def record_request(request) -> None:
+                if request.method == "POST" and (
+                    request.url.endswith("/api/v1/decks") or "/versions" in request.url
+                ):
+                    upload_requests.append(request.url)
+
+            page.on("request", record_request)
+            page.goto(base_url + "/", wait_until="networkidle")
+            expect(page.locator("#library")).to_be_visible()
+
+            # Both fields are required, and dispatching confirm twice still resolves
+            # one dialog promise and creates exactly one multipart request.
+            expect(page.locator("#lib-upload")).to_have_text("Upload deck")
+            page.locator("#lib-upload").click()
+            expect(page.locator("#dialog-title")).to_have_text("Upload new deck")
+            expect(page.locator(".upload-dropzone")).to_be_visible()
+            expect(page.locator(".upload-dropzone")).to_contain_text("Drop a ZIP file here")
+            expect(page.locator("#dialog-confirm")).to_be_disabled()
+            page.locator('[data-dialog-field="name"]').fill("Uploaded deck")
+            expect(page.locator("#dialog-confirm")).to_be_disabled()
+            page.locator('[data-dialog-field="file"]').set_input_files(
+                {"name": "deck.zip", "mimeType": "application/zip", "buffer": version_one}
+            )
+            expect(page.locator("#dialog-confirm")).to_be_enabled()
+            before_uploads = len(upload_requests)
+            page.locator("#dialog-confirm").evaluate("button => { button.click(); button.click(); }")
+            expect(page.locator("#dialog-overlay")).to_be_hidden()
+            _wait_until(
+                lambda: client.get("/api/v1/library").json()["ungrouped"]["decks"][0]["name"]
+                == "Uploaded deck",
+                "Uploaded deck did not appear at the front of Ungrouped",
+                timeout=20,
+            )
+            library = client.get("/api/v1/library").json()
+            assert [deck["id"] for deck in library["ungrouped"]["decks"]][1] == older["id"]
+            uploaded = library["ungrouped"]["decks"][0]
+            assert len(upload_requests) == before_uploads + 1
+            expect(_card(page, uploaded["id"])).to_be_visible()
+
+            _card(page, uploaded["id"]).click()
+            expect(page.locator("#app")).to_be_visible()
+            expect(page.get_by_role("button", name="Upload new version")).to_be_visible()
+            expect(page.get_by_role("button", name="Download ZIP")).to_be_enabled()
+            assert page.locator("#upload-version").inner_text().strip() == ""
+            assert page.locator("#download-version").inner_text().strip() == ""
+
+            def upload_version(payload: bytes, expected_active: int) -> None:
+                before = len(upload_requests)
+                page.locator("#upload-version").click()
+                expect(page.locator("#dialog-title")).to_have_text("Upload new version")
+                expect(page.locator("#dialog-confirm")).to_be_disabled()
+                page.locator(".upload-dropzone").evaluate(
+                    """(dropzone, encoded) => {
+                        const bytes = Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
+                        const transfer = new DataTransfer();
+                        transfer.items.add(new File([bytes], "deck.zip", {type: "application/zip"}));
+                        dropzone.dispatchEvent(new DragEvent("dragover", {
+                            bubbles: true, cancelable: true, dataTransfer: transfer
+                        }));
+                        dropzone.dispatchEvent(new DragEvent("drop", {
+                            bubbles: true, cancelable: true, dataTransfer: transfer
+                        }));
+                    }""",
+                    base64.b64encode(payload).decode("ascii"),
+                )
+                expect(page.locator(".upload-file-name")).to_have_text("deck.zip")
+                expect(page.locator("#dialog-confirm")).to_be_enabled()
+                page.locator("#dialog-confirm").evaluate(
+                    "button => { button.click(); button.click(); }"
+                )
+                _wait_until(
+                    lambda: client.get(
+                        f"/api/v1/decks/{uploaded['id']}/versions"
+                    ).json()["active_version"]
+                    == expected_active,
+                    f"Uploaded version {expected_active} did not become active",
+                    timeout=20,
+                )
+                expect(page.locator("#dialog-overlay")).to_be_hidden()
+                expect(page.locator("#upload-version")).to_be_enabled(timeout=20_000)
+                assert len(upload_requests) == before + 1
+
+            upload_version(version_two, 2)
+            upload_version(version_three, 3)
+
+            # Overview changed only in deck versions 1 and 3. Screen history labels
+            # those entries v1/v2, but Download ZIP must still request deck version 3.
+            page.locator('#scope-switch button[data-scope="screen"]').click()
+            expect(page.locator("#version-heading")).to_contain_text("(2)")
+            expect(page.locator(".version-card.viewing .version-number")).to_have_text("v2")
+            with page.expect_download(timeout=20_000) as download_info:
+                page.locator("#download-version").click()
+            downloaded = download_info.value
+            assert downloaded.suggested_filename == f"{uploaded['id']}_v3.zip"
+            downloaded_bytes = Path(downloaded.path()).read_bytes()
+            with zipfile.ZipFile(io.BytesIO(downloaded_bytes)) as archive:
+                assert b"overview three" in archive.read("overview/index.html")
+
+            # The exact source archive returned by Download ZIP can be registered as
+            # the next version of the same deck and becomes active.
+            upload_version(downloaded_bytes, 4)
+            history = client.get(f"/api/v1/decks/{uploaded['id']}/versions").json()
+            assert [item["version"] for item in history["items"] if item["status"] == "ready"] == [
+                1,
+                2,
+                3,
+                4,
+            ]
+
+            # A malformed archive uses the custom error dialog and cannot disturb
+            # the active pointer. The double confirm still produces one POST.
+            before = len(upload_requests)
+            page.locator("#upload-version").click()
+            page.locator('[data-dialog-field="file"]').set_input_files(
+                {"name": "broken.zip", "mimeType": "application/zip", "buffer": b"not a zip"}
+            )
+            page.locator("#dialog-confirm").evaluate("button => { button.click(); button.click(); }")
+            expect(page.locator("#dialog-title")).to_have_text(
+                "Could not upload this version.", timeout=20_000
+            )
+            expect(page.locator("#dialog-body")).not_to_be_empty()
+            assert len(upload_requests) == before + 1
+            assert client.get(
+                f"/api/v1/decks/{uploaded['id']}/versions"
+            ).json()["active_version"] == 4
+            page.locator("#dialog-confirm").click()
+
             context.close()
             browser.close()

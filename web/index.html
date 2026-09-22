@@ -70,14 +70,18 @@
   #mode-switch button:first-child, #scope-switch button:first-child { border-radius: 5px 0 0 5px; }
   #mode-switch button:last-child, #scope-switch button:last-child { margin-left: -1px; border-radius: 0 5px 5px 0; }
   #mode-switch button[aria-pressed="true"], #scope-switch button[aria-pressed="true"] { position: relative; border-color: #1a73e8; background: #e8f0fe; color: #174ea6; }
-  #copy[hidden], #mode-switch[hidden], #scope-switch[hidden], #compare-controls[hidden], #viewing-tag[hidden] { display: none; }
+  #copy[hidden], #mode-switch[hidden], #scope-switch[hidden], #compare-controls[hidden], #viewing-tag[hidden], #zoom-controls[hidden] { display: none; }
+  #zoom-controls { flex: none; display: flex; align-items: center; gap: 4px; }
+  #zoom-controls button { width: 26px; padding: 5px 0; font-size: 13px; font-weight: 700; line-height: 1; }
+  #zoom-controls button:disabled { opacity: .4; cursor: not-allowed; }
+  #zoom-level { min-width: 40px; text-align: center; font-size: 12px; font-weight: 650; color: #3c4043; }
   #compare-controls { min-height: 48px; flex: none; display: flex; align-items: center; justify-content: center; gap: 10px;
                       padding: 7px 12px; border-bottom: 1px solid #dfe1e5; background: #fafafb; font-size: 12px; }
   #compare-controls label { display: flex; align-items: center; gap: 6px; font-weight: 650; }
   #compare-controls select { min-width: 108px; padding: 5px 24px 5px 7px; border: 1px solid #bdc1c6; border-radius: 5px; background: #fff; }
   #swap { padding: 5px 8px; border: 1px solid #bdc1c6; border-radius: 5px; background: #fff; cursor: pointer; }
   #viewer { flex: 1; display: flex; min-height: 0; gap: 1px; background: #c8cbd0; }
-  .pane { position: relative; flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; background: #fff; }
+  .pane { position: relative; flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; background: #fff; overflow: auto; }
   .pane-label { display: none; min-height: 30px; flex: none; align-items: center; justify-content: center;
                 border-bottom: 1px solid #e3e5e8; background: #f8f9fa; color: #656970; font-size: 11px; font-weight: 700; }
   #viewer.compare .pane-label { display: flex; }
@@ -229,6 +233,11 @@
         <button type="button" data-mode="single" aria-pressed="true">Active</button>
         <button type="button" data-mode="compare" aria-pressed="false">Compare</button>
       </div>
+      <div id="zoom-controls" hidden aria-label="Deck zoom">
+        <button id="zoom-out" type="button" aria-label="Zoom out">&minus;</button>
+        <span id="zoom-level">100%</span>
+        <button id="zoom-in" type="button" aria-label="Zoom in">&plus;</button>
+      </div>
       <button id="copy" type="button" hidden>Copy link</button>
     </div>
     <div id="compare-controls" hidden>
@@ -301,6 +310,10 @@ let decks = [];
 let decksLoaded = false;
 let decksLoadFailed = false;
 let currentId = null;
+// T0014 4: null means "no scope resolved yet / fell back to unscoped" (the old,
+// show-everything behavior). Once resolved from server-authoritative /api/v1/library
+// data it holds exactly the deck ids that belong in the current deck's rail.
+let railScopeIds = null;
 let screens = [];
 let currentScreenKey = null;
 let scope = 'deck';
@@ -310,6 +323,44 @@ let versionA = null;
 let versionB = null;
 let viewingVersion = null;
 const initialMode = new URLSearchParams(location.search).get('mode');
+
+// T0014 3: zoom applies only to the deck content panes (frame-a, and frame-b in
+// compare mode) - never to the MirageGlass header, deck rail, or version history.
+// CSS `zoom` reflows just the iframe's own box; `.pane` (see #viewer CSS) scrolls
+// the overflow, so surrounding flex layout never changes size regardless of the
+// current factor. The percent is in-memory JS state only: it starts at 100 on
+// every fresh page load and is deliberately left untouched by deck/version/screen/
+// mode switches, which only ever reassign iframe.src - so the chosen zoom survives
+// those switches for free. 50%-200% in 10% steps was picked as a usable range: it
+// stays readable at both ends without letting a stray click blow up the layout.
+const ZOOM_MIN_PERCENT = 50;
+const ZOOM_MAX_PERCENT = 200;
+const ZOOM_STEP_PERCENT = 10;
+let zoomPercent = 100;
+
+function applyZoom() {
+  const factor = String(zoomPercent / 100);
+  ['frame-a', 'frame-b'].forEach(id => {
+    const frame = document.getElementById(id);
+    if (frame) frame.style.zoom = factor;
+  });
+  const level = document.getElementById('zoom-level');
+  if (level) level.textContent = zoomPercent + '%';
+  document.getElementById('zoom-out').disabled = zoomPercent <= ZOOM_MIN_PERCENT;
+  document.getElementById('zoom-in').disabled = zoomPercent >= ZOOM_MAX_PERCENT;
+}
+
+document.getElementById('zoom-out').onclick = () => {
+  zoomPercent = Math.max(ZOOM_MIN_PERCENT, zoomPercent - ZOOM_STEP_PERCENT);
+  applyZoom();
+};
+
+document.getElementById('zoom-in').onclick = () => {
+  zoomPercent = Math.min(ZOOM_MAX_PERCENT, zoomPercent + ZOOM_STEP_PERCENT);
+  applyZoom();
+};
+
+applyZoom();
 
 function applyRail(hidden) {
   document.getElementById('app').classList.toggle('rail-hidden', hidden);
@@ -354,6 +405,13 @@ function formatTimestamp(iso) {
     + ` ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}`;
 }
 
+// The rail only lists decks from the current deck's Library group (T0014 4);
+// railScopeIds is kept in server-authoritative sync by loadRailScope() on every
+// hash-driven deck open, and null falls back to the previous unscoped listing.
+function visibleRailDecks() {
+  return railScopeIds ? decks.filter(deck => railScopeIds.has(deck.id)) : decks;
+}
+
 function renderDecks() {
   const list = document.getElementById('deck-list');
   if (!decks.length) {
@@ -362,10 +420,12 @@ function renderDecks() {
       : '<div class="empty">No decks registered yet.</div>';
     return;
   }
+  const railDecks = visibleRailDecks();
   list.innerHTML = '';
-  decks.forEach((deck, index) => {
+  railDecks.forEach((deck, index) => {
     const item = document.createElement('div');
     item.className = 'deck-item' + (deck.id === currentId ? ' active' : '');
+    item.dataset.deckId = deck.id;
     const preview = deck.thumb_url
       ? `<img class="thumb" src="${esc(deck.thumb_url)}" alt="">`
       : `<div class="card">${String(index + 1).padStart(2, '0')}</div>`;
@@ -677,6 +737,7 @@ async function selectDeck(id) {
   document.querySelector('#bar .title').textContent = deck.name;
   document.getElementById('copy').hidden = false;
   document.getElementById('mode-switch').hidden = false;
+  document.getElementById('zoom-controls').hidden = false;
   document.getElementById('scope-switch').hidden = true;
   document.querySelectorAll('#scope-switch button').forEach(button => {
     button.setAttribute('aria-pressed', String(button.dataset.scope === scope));
@@ -740,11 +801,42 @@ document.getElementById('copy').onclick = () => {
 // Normalizes the fixed error shape from D0007 3.6/T0010 0): {detail:{code,message}}
 // on 401/404/422, or a legacy plain-string detail (older deck-delete route). Read
 // endpoints and 204 responses just resolve with their body (or null).
-async function apiRequest(url, options) {
+// D0007 3.6 / T0014 1: the browser console session is a short-lived, HttpOnly,
+// origin-bound cookie (see server/auth.py issue_console_session()). It can expire
+// while Library stays open in the tab. A same-origin GET / is the only thing that
+// reissues it (the same request the server already runs on first load), and it
+// never exposes the operation token to JS. On a 401 this reissues the cookie and
+// retries the original mutation exactly once - the _retried flag is the whole
+// budget, so a mutation can recurse into this branch at most one extra time no
+// matter how the response looks. Operation-token (Bearer) callers never reach this
+// function at all: this file never sends an Authorization header (grep confirms),
+// so every apiRequest() call is inherently a console-session request already.
+async function reestablishConsoleSession() {
+  try {
+    // cache: 'no-store' is load-bearing, not decoration: GET / has no explicit
+    // Cache-Control (it is a plain FileResponse), so a browser can serve a repeat
+    // same-URL fetch entirely from its HTTP cache with no network round trip at
+    // all - which means no fresh Set-Cookie ever reaches the cookie jar, and every
+    // retry after the first would silently fail forever. Forcing the network hit
+    // is what actually reissues the session.
+    const response = await fetch('/', { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+    return response.ok;
+  } catch (error) {
+    // Same-origin GET / itself failed (offline, server down, ...). Do not retry
+    // into more failure; let the original 401 surface through the normal path.
+    return false;
+  }
+}
+
+async function apiRequest(url, options, _retried) {
   const response = await fetch(url, options);
   if (response.ok) {
     if (response.status === 204) return null;
     return response.json();
+  }
+  if (response.status === 401 && !_retried) {
+    const reestablished = await reestablishConsoleSession();
+    if (reestablished) return apiRequest(url, options, true);
   }
   let detail = null;
   try {
@@ -1229,14 +1321,21 @@ function isGroupMoveNoop(groupId, index) {
   return libraryData.groups.findIndex(group => group.id === groupId) === index;
 }
 
+// T0014 2: dropping an item on itself is a no-op (drag UI cleanup only, zero
+// mutation requests). This is checked here, before any index math, so it is the
+// single source of truth - calculateDeckIndex/calculateGroupIndex already exclude
+// the dragged id from the sibling list before locating the target, so a self-target
+// would otherwise fall through to the ids.length "end of list" branch and be
+// mistaken for a real move to the end.
 function dropDeck(event, groupId, targetId, position) {
   if (!dragState || dragState.kind !== 'deck') return;
   event.preventDefault();
   event.stopPropagation();
   const deckId = dragState.id;
-  const index = calculateDeckIndex(deckId, groupId, targetId, position);
+  const isSelfDrop = targetId === deckId;
+  const index = isSelfDrop ? null : calculateDeckIndex(deckId, groupId, targetId, position);
   finishLibraryDrag();
-  if (isDeckMoveNoop(deckId, groupId, index)) return;
+  if (isSelfDrop || isDeckMoveNoop(deckId, groupId, index)) return;
   void dispatchOrganizationMove({ kind: 'deck', id: deckId, groupId, index });
 }
 
@@ -1245,9 +1344,10 @@ function dropGroup(event, targetId, position) {
   event.preventDefault();
   event.stopPropagation();
   const groupId = dragState.id;
-  const index = calculateGroupIndex(groupId, targetId, position);
+  const isSelfDrop = targetId === groupId;
+  const index = isSelfDrop ? null : calculateGroupIndex(groupId, targetId, position);
   finishLibraryDrag();
-  if (isGroupMoveNoop(groupId, index)) return;
+  if (isSelfDrop || isGroupMoveNoop(groupId, index)) return;
   void dispatchOrganizationMove({ kind: 'group', id: groupId, index });
 }
 
@@ -1760,6 +1860,7 @@ document.getElementById('lib-search').addEventListener('input', renderLibrary);
 function showLibraryScreen() {
   document.getElementById('app').hidden = true;
   document.getElementById('library').hidden = false;
+  railScopeIds = null;
   loadLibrary();
 }
 
@@ -1782,6 +1883,35 @@ async function ensureDecksLoaded() {
   decksLoaded = true;
 }
 
+// T0014 4: the Viewer rail only shows decks from deckId's Library group (or only
+// Ungrouped decks, when deckId itself is Ungrouped). Membership is resolved fresh
+// from /api/v1/library - the same server-authoritative order/grouping Library
+// itself renders from - every time a deck is opened, never from which Library
+// shelf/card was clicked to get here. That keeps grouped/Ungrouped open, direct
+// #deck_id open, and switching decks from inside the rail all consistent, and
+// picks up a group change made in Library without needing a full page reload.
+// A failed lookup (offline, 5xx) falls back to the previous unscoped behavior
+// rather than leaving the rail empty.
+async function loadRailScope(deckId) {
+  try {
+    const response = await fetch('/api/v1/library');
+    if (!response.ok) throw new Error('library unavailable');
+    const library = await response.json();
+    const group = library.groups.find(item => item.decks.some(deck => deck.id === deckId));
+    if (group) {
+      railScopeIds = new Set(group.decks.map(deck => deck.id));
+      return;
+    }
+    if (library.ungrouped.decks.some(deck => deck.id === deckId)) {
+      railScopeIds = new Set(library.ungrouped.decks.map(deck => deck.id));
+      return;
+    }
+    railScopeIds = null;
+  } catch (error) {
+    railScopeIds = null;
+  }
+}
+
 async function openDeckFromHash(id) {
   // Every hash entry - typed/bookmarked link, browser back/forward, or a rail
   // click re-entering through its own location.hash write - re-checks the
@@ -1802,6 +1932,7 @@ async function openDeckFromHash(id) {
     });
     return;
   }
+  await loadRailScope(id);
   showViewerScreen();
   recordRecent(id);
   renderDecks();

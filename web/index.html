@@ -71,10 +71,15 @@
   #mode-switch button:last-child, #scope-switch button:last-child { margin-left: -1px; border-radius: 0 5px 5px 0; }
   #mode-switch button[aria-pressed="true"], #scope-switch button[aria-pressed="true"] { position: relative; border-color: #1a73e8; background: #e8f0fe; color: #174ea6; }
   #copy[hidden], #mode-switch[hidden], #scope-switch[hidden], #compare-controls[hidden], #viewing-tag[hidden], #zoom-controls[hidden] { display: none; }
-  #zoom-controls { flex: none; display: flex; align-items: center; gap: 4px; }
-  #zoom-controls button { width: 26px; padding: 5px 0; font-size: 13px; font-weight: 700; line-height: 1; }
-  #zoom-controls button:disabled { opacity: .4; cursor: not-allowed; }
-  #zoom-level { min-width: 40px; text-align: center; font-size: 12px; font-weight: 650; color: #3c4043; }
+  #zoom-controls, #lib-zoom-controls { flex: none; display: flex; align-items: center; gap: 4px; }
+  #lib-zoom-controls { margin-left: auto; }
+  #zoom-controls button, #lib-zoom-controls button {
+    width: 26px; padding: 5px 0; font-size: 13px; font-weight: 700; line-height: 1;
+    border: 1px solid #c7c9cd; border-radius: 5px; background: #fff; color: #3c4043; cursor: pointer;
+  }
+  #zoom-controls button:hover, #lib-zoom-controls button:hover { background: #f5f6f7; }
+  #zoom-controls button:disabled, #lib-zoom-controls button:disabled { opacity: .4; cursor: not-allowed; }
+  #zoom-level, #lib-zoom-level { min-width: 40px; text-align: center; font-size: 12px; font-weight: 650; color: #3c4043; }
   #compare-controls { min-height: 48px; flex: none; display: flex; align-items: center; justify-content: center; gap: 10px;
                       padding: 7px 12px; border-bottom: 1px solid #dfe1e5; background: #fafafb; font-size: 12px; }
   #compare-controls label { display: flex; align-items: center; gap: 6px; font-weight: 650; }
@@ -114,7 +119,7 @@
   .lib-group-kebab { margin-left: auto; border: 0; background: none; cursor: pointer; font-size: 16px;
                       padding: 2px 8px; border-radius: 4px; color: #5f6368; }
   .lib-group-kebab:hover { background: #e8eaed; }
-  .lib-group-cards { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 0 0 20px; }
+  .lib-group-cards { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 0 8px 20px; }
   .lib-group.collapsed .lib-group-cards { display: none; }
   .lib-card { position: relative; width: 190px; border: 1px solid #dcdce0; border-radius: 6px; background: #fff;
               padding: 8px; cursor: pointer; }
@@ -262,6 +267,11 @@
     <span class="lib-title">MirageGlass</span>
     <input id="lib-search" type="search" placeholder="Search decks and groups" aria-label="Search decks and groups" />
     <button id="lib-new-group" type="button">New group</button>
+    <div id="lib-zoom-controls" aria-label="Library zoom">
+      <button id="lib-zoom-out" type="button" aria-label="Zoom out">&minus;</button>
+      <span id="lib-zoom-level">100%</span>
+      <button id="lib-zoom-in" type="button" aria-label="Zoom in">&plus;</button>
+    </div>
   </header>
   <div id="lib-scroll">
     <section id="lib-pinned-row" class="lib-shelf" hidden>
@@ -310,9 +320,12 @@ let decks = [];
 let decksLoaded = false;
 let decksLoadFailed = false;
 let currentId = null;
-// T0014 4: null means "no scope resolved yet / fell back to unscoped" (the old,
-// show-everything behavior). Once resolved from server-authoritative /api/v1/library
-// data it holds exactly the deck ids that belong in the current deck's rail.
+// T0014 4 / T0016 4: null means "no scope resolved yet" (before the first
+// loadRailScope() call, e.g. on the Library screen) and falls back to showing
+// every deck. Once resolved it is never null again - it holds the current
+// deck's Library group (or Ungrouped) in that group's own server order, or just
+// [deckId] when the lookup fails or the deck isn't found in the listing
+// (fail-closed, never every deck).
 let railScopeIds = null;
 let screens = [];
 let currentScreenKey = null;
@@ -362,6 +375,38 @@ document.getElementById('zoom-in').onclick = () => {
 
 applyZoom();
 
+// T0016 1: Library zoom is independent from Viewer zoom (separate in-memory
+// state, starts at 100% on every fresh load) and only ever scales the dashboard
+// content column (#lib-scroll: Pinned/Recent, group headers, deck cards,
+// Ungrouped) - never the header/search bar above it or the menu/dialog overlays,
+// which sit outside #lib-scroll in the DOM and are unaffected by its zoom. CSS
+// `zoom` (not `transform`) keeps DnD hit-testing, getBoundingClientRect() and
+// click/drag coordinates correct at any factor, for the same reason as the
+// Viewer zoom above.
+const LIB_ZOOM_MIN_PERCENT = 50;
+const LIB_ZOOM_MAX_PERCENT = 200;
+const LIB_ZOOM_STEP_PERCENT = 10;
+let libZoomPercent = 100;
+
+function applyLibZoom() {
+  document.getElementById('lib-scroll').style.zoom = String(libZoomPercent / 100);
+  document.getElementById('lib-zoom-level').textContent = libZoomPercent + '%';
+  document.getElementById('lib-zoom-out').disabled = libZoomPercent <= LIB_ZOOM_MIN_PERCENT;
+  document.getElementById('lib-zoom-in').disabled = libZoomPercent >= LIB_ZOOM_MAX_PERCENT;
+}
+
+document.getElementById('lib-zoom-out').onclick = () => {
+  libZoomPercent = Math.max(LIB_ZOOM_MIN_PERCENT, libZoomPercent - LIB_ZOOM_STEP_PERCENT);
+  applyLibZoom();
+};
+
+document.getElementById('lib-zoom-in').onclick = () => {
+  libZoomPercent = Math.min(LIB_ZOOM_MAX_PERCENT, libZoomPercent + LIB_ZOOM_STEP_PERCENT);
+  applyLibZoom();
+};
+
+applyLibZoom();
+
 function applyRail(hidden) {
   document.getElementById('app').classList.toggle('rail-hidden', hidden);
   const toggle = document.getElementById('rail-toggle');
@@ -405,11 +450,19 @@ function formatTimestamp(iso) {
     + ` ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}`;
 }
 
-// The rail only lists decks from the current deck's Library group (T0014 4);
-// railScopeIds is kept in server-authoritative sync by loadRailScope() on every
-// hash-driven deck open, and null falls back to the previous unscoped listing.
+// The rail only lists decks from the current deck's Library group (T0014 4,
+// T0016 4); railScopeIds is kept in server-authoritative sync by loadRailScope()
+// on every hash-driven deck open, and holds that group's/Ungrouped's own server
+// order (not /api/v1/decks' registration order) so the rail mirrors whatever
+// order Library itself renders. null only happens before the first
+// loadRailScope() call (e.g. while on the Library screen) and falls back to the
+// full unscoped listing; loadRailScope() itself never leaves it null again - a
+// failed lookup or missing membership fails closed to [deckId] instead of ever
+// widening back to every deck (T0016 4).
 function visibleRailDecks() {
-  return railScopeIds ? decks.filter(deck => railScopeIds.has(deck.id)) : decks;
+  if (!railScopeIds) return decks;
+  const byId = new Map(decks.map(deck => [deck.id, deck]));
+  return railScopeIds.map(id => byId.get(id)).filter(Boolean);
 }
 
 function renderDecks() {
@@ -439,7 +492,12 @@ function renderDecks() {
       + `<div class="name">${esc(deck.name)}</div>`
       + `<div class="date">${esc(formatTimestamp(deck.created_at))}</div>`
       + versionBadge;
-    item.onclick = () => selectDeck(deck.id);
+    // T0016 2: location.hash is the single navigation owner - clicking a rail
+    // item only ever writes the hash (openDeckFromHash()/selectDeck() do the
+    // actual work via the resulting hashchange), so a rail click can never run
+    // selectDeck() twice the way it used to when selectDeck() itself also wrote
+    // location.hash.
+    item.onclick = () => { location.hash = deck.id; };
     list.appendChild(item);
 
     // The screen tree nests directly under the selected deck, and only appears
@@ -744,7 +802,6 @@ async function selectDeck(id) {
   });
   document.getElementById('frame-a').src = deck.viewer_url;
   document.getElementById('frame-b').removeAttribute('src');
-  location.hash = id;
   setMode('single');
   renderDecks();
   renderVersions();
@@ -1883,15 +1940,26 @@ async function ensureDecksLoaded() {
   decksLoaded = true;
 }
 
-// T0014 4: the Viewer rail only shows decks from deckId's Library group (or only
-// Ungrouped decks, when deckId itself is Ungrouped). Membership is resolved fresh
-// from /api/v1/library - the same server-authoritative order/grouping Library
-// itself renders from - every time a deck is opened, never from which Library
-// shelf/card was clicked to get here. That keeps grouped/Ungrouped open, direct
-// #deck_id open, and switching decks from inside the rail all consistent, and
-// picks up a group change made in Library without needing a full page reload.
-// A failed lookup (offline, 5xx) falls back to the previous unscoped behavior
-// rather than leaving the rail empty.
+// T0014 4 / T0016 4: the Viewer rail only shows decks from deckId's Library group
+// (or only Ungrouped decks, when deckId itself is Ungrouped), in that group's own
+// server order. Membership and order are resolved fresh from /api/v1/library -
+// the same server-authoritative listing Library itself renders from - every time
+// a deck is opened, never from which Library shelf/card was clicked to get here.
+// That keeps grouped/Ungrouped open, direct #deck_id open, and switching decks
+// from inside the rail all consistent, and picks up a group change (or reorder)
+// made in Library without needing a full page reload. A failed lookup (offline,
+// 5xx) or a current deck missing from the response (deleted mid-navigation, stale
+// membership) fails closed to just [deckId] - it must never widen back to every
+// deck in the rail.
+//
+// T0016 review (rej_01M33JG3BQCB2DAF): this only *resolves* the scope and
+// returns it - it must never write the shared railScopeIds itself. It used to,
+// which meant a stale call (superseded by a newer hashchange while its own
+// /api/v1/library fetch was still in flight) could still overwrite the rail
+// out from under whichever deck is now actually showing the moment its
+// response landed, regardless of any generation check the caller ran
+// afterwards. The caller alone decides, after re-checking navGeneration, when
+// (and whether) a resolved scope is actually current enough to commit.
 async function loadRailScope(deckId) {
   try {
     const response = await fetch('/api/v1/library');
@@ -1899,29 +1967,46 @@ async function loadRailScope(deckId) {
     const library = await response.json();
     const group = library.groups.find(item => item.decks.some(deck => deck.id === deckId));
     if (group) {
-      railScopeIds = new Set(group.decks.map(deck => deck.id));
-      return;
+      return group.decks.map(deck => deck.id);
     }
     if (library.ungrouped.decks.some(deck => deck.id === deckId)) {
-      railScopeIds = new Set(library.ungrouped.decks.map(deck => deck.id));
-      return;
+      return library.ungrouped.decks.map(deck => deck.id);
     }
-    railScopeIds = null;
+    return [deckId];
   } catch (error) {
-    railScopeIds = null;
+    return [deckId];
   }
 }
 
-async function openDeckFromHash(id) {
+// T0016 review (rej_01M33H6TVQ61HBCX): a hashchange fires a brand new async
+// openDeckFromHash() without waiting for any call already in flight. Rapid
+// deck switches (rail clicks, back/forward, typed hashes) can therefore have
+// two calls in flight at once, and network timing decides nothing about which
+// one is "latest" - an earlier call whose ensureDecksLoaded()/loadRailScope()
+// await happens to resolve after a later call's already reached selectDeck()
+// would otherwise still go on to flip the screen, record-recent, and
+// re-select its own (now stale) deck, stomping the newer navigation the user
+// actually landed on. navGeneration is bumped once per route() dispatch (the
+// same latest-wins generation-counter shape loadLibrary() already uses for
+// its own overlapping reads, see libraryLoadGeneration above); every call
+// captures its own generation and re-checks it against the live counter after
+// each await, so only the most recently dispatched route can still be running
+// by the time it reaches the state-mutating tail (showViewerScreen onward).
+let navGeneration = 0;
+
+async function openDeckFromHash(id, generation) {
   // Every hash entry - typed/bookmarked link, browser back/forward, or a rail
-  // click re-entering through its own location.hash write - re-checks the
-  // server directly instead of trusting whatever the decks cache currently
-  // holds. Viewer-to-Viewer navigation never passes through Library, so a
-  // decksLoaded cache left over from a previous deck would otherwise still
+  // click (whose onclick only ever writes location.hash, see renderDecks() -
+  // T0016 2 made this the single navigation owner; selectDeck() itself never
+  // touches location.hash, so there is no recursive re-entry through here) -
+  // re-checks the server directly instead of trusting whatever the decks cache
+  // currently holds. Viewer-to-Viewer navigation never passes through Library,
+  // so a decksLoaded cache left over from a previous deck would otherwise still
   // read as "fresh" while another session deleted or renamed this id in the
   // meantime (D0007 3.1, 3.7).
   decksLoaded = false;
   await ensureDecksLoaded();
+  if (generation !== navGeneration) return;
   const deck = decks.find(item => item.id === id);
   if (!deck) {
     location.hash = '';
@@ -1932,7 +2017,9 @@ async function openDeckFromHash(id) {
     });
     return;
   }
-  await loadRailScope(id);
+  const scope = await loadRailScope(id);
+  if (generation !== navGeneration) return;
+  railScopeIds = scope;
   showViewerScreen();
   recordRecent(id);
   renderDecks();
@@ -1941,11 +2028,12 @@ async function openDeckFromHash(id) {
 
 function route() {
   const id = location.hash.slice(1);
+  const generation = ++navGeneration;
   if (!id) {
     showLibraryScreen();
     return;
   }
-  openDeckFromHash(id);
+  openDeckFromHash(id, generation);
 }
 
 document.getElementById('to-library').onclick = () => {

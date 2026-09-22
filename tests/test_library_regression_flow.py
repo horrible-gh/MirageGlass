@@ -30,6 +30,7 @@ from test_library_connected_flow import (
     _free_port,
     _move_deck,
     _section_ids,
+    _wait_for_section,
     _wait_until,
     _zip,
     connected_server,
@@ -619,6 +620,800 @@ def test_viewer_zoom_persists_across_version_screen_and_mode_switches(connected_
 
             # None of the above disturbed the stable Viewer URL contract.
             assert f"/v/{deck['id']}/" in page.locator("#frame-a").get_attribute("src")
+
+            context.close()
+            browser.close()
+
+
+# ---------------------------------------------------------------------------
+# Z1/Z2/Z3 - Library/Home header zoom in/out (T0016 1)
+# ---------------------------------------------------------------------------
+
+def test_library_zoom_basic_scales_dashboard_content(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        group_a = _create_group(client, "Group A")
+        a1 = _create_deck(client, "A1", "z1-a1")
+        _move_deck(client, a1["id"], group_a["id"], 0)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1100, "height": 800})
+            page = context.new_page()
+            page.goto(base_url + "/", wait_until="networkidle")
+            expect(page.locator("#library")).to_be_visible()
+
+            # Z1: the header shows [-] 100% [+] before anything is touched, and
+            # only #lib-scroll (the dashboard content column) carries the zoom -
+            # never the header/search bar it lives in.
+            expect(page.locator("#lib-zoom-controls")).to_be_visible()
+            expect(page.locator("#lib-zoom-level")).to_have_text("100%")
+            expect(page.locator("#lib-zoom-out")).to_have_attribute("aria-label", "Zoom out")
+            expect(page.locator("#lib-zoom-in")).to_have_attribute("aria-label", "Zoom in")
+            assert page.locator("#lib-scroll").evaluate("el => el.style.zoom") == "1"
+
+            page.locator("#lib-zoom-in").click()
+            expect(page.locator("#lib-zoom-level")).to_have_text("110%")
+            assert page.locator("#lib-scroll").evaluate("el => el.style.zoom") == "1.1"
+            assert page.locator("#lib-bar").evaluate("el => el.style.zoom") in ("", "normal")
+
+            # Zoom survives search and group collapse/expand.
+            page.locator("#lib-search").fill("A1")
+            expect(page.locator("#lib-zoom-level")).to_have_text("110%")
+            page.locator("#lib-search").fill("")
+
+            toggle = page.locator(f'.lib-group[data-group-id="{group_a["id"]}"] .lib-group-toggle')
+            toggle.click()
+            expect(page.locator("#lib-zoom-level")).to_have_text("110%")
+            toggle.click()
+
+            page.locator("#lib-zoom-out").click()
+            expect(page.locator("#lib-zoom-level")).to_have_text("100%")
+            assert page.locator("#lib-scroll").evaluate("el => el.style.zoom") == "1"
+
+            context.close()
+            browser.close()
+
+
+def test_library_zoom_interactions_stay_correct_at_120_percent(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        group_a = _create_group(client, "Group A")
+        a1 = _create_deck(client, "A1", "z2-a1")
+        a2 = _create_deck(client, "A2", "z2-a2")
+        for index, deck in enumerate([a1, a2]):
+            _move_deck(client, deck["id"], group_a["id"], index)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1100, "height": 800})
+            page = context.new_page()
+            page.goto(base_url + "/", wait_until="networkidle")
+            expect(page.locator("#library")).to_be_visible()
+
+            page.locator("#lib-zoom-in").click()
+            page.locator("#lib-zoom-in").click()
+            expect(page.locator("#lib-zoom-level")).to_have_text("120%")
+
+            # Z2: search still filters correctly while zoomed.
+            page.locator("#lib-search").fill("A2")
+            expect(_card(page, a2["id"])).to_be_visible()
+            expect(_card(page, a1["id"])).to_have_count(0)
+            page.locator("#lib-search").fill("")
+
+            # Group collapse toggling still works.
+            toggle = page.locator(f'.lib-group[data-group-id="{group_a["id"]}"] .lib-group-toggle')
+            toggle.click()
+            assert page.locator(f'.lib-group[data-group-id="{group_a["id"]}"]').evaluate(
+                "el => el.classList.contains('collapsed')"
+            )
+            toggle.click()
+
+            # Context action (kebab menu) still opens and dismisses cleanly.
+            _card(page, a1["id"]).locator(".lib-kebab").click()
+            page.get_by_role("menuitem", name="Rename", exact=True).click()
+            expect(page.locator("#dialog-overlay")).to_be_visible()
+            page.locator("#dialog-cancel").click()
+
+            # DnD reorder lands at the real, pointer-accurate drop target under zoom.
+            _card(page, a2["id"]).drag_to(_card(page, a1["id"]), target_position={"x": 20, "y": 3})
+            _wait_for_section(client, page, group_a["id"], [a2["id"], a1["id"]])
+
+            # Deck click still navigates to the Viewer. finishLibraryDrag() (T0014
+            # 2) suppresses the click that would otherwise immediately follow a
+            # drag release for 300ms - wait it out first so this exercises a real
+            # click, not the drag's own release suppression window.
+            page.wait_for_timeout(350)
+            _card(page, a1["id"]).click()
+            expect(page.locator("#app")).to_be_visible()
+            expect(page.locator("#bar .title")).to_have_text("A1")
+
+            context.close()
+            browser.close()
+
+
+def test_library_and_viewer_zoom_are_independent(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        deck = _create_deck(client, "Indep Deck", "z3-1")
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1100, "height": 800})
+            page = context.new_page()
+            page.goto(base_url + "/", wait_until="networkidle")
+            expect(page.locator("#library")).to_be_visible()
+
+            # Library 120%.
+            page.locator("#lib-zoom-in").click()
+            page.locator("#lib-zoom-in").click()
+            expect(page.locator("#lib-zoom-level")).to_have_text("120%")
+
+            # Z3: opening a deck starts the Viewer at its own independent 100%.
+            _card(page, deck["id"]).click()
+            expect(page.locator("#app")).to_be_visible()
+            expect(page.locator("#zoom-level")).to_have_text("100%")
+
+            # Viewer 130% - three steps up from 100%.
+            page.locator("#zoom-in").click()
+            page.locator("#zoom-in").click()
+            page.locator("#zoom-in").click()
+            expect(page.locator("#zoom-level")).to_have_text("130%")
+
+            # Back to Library: its own zoom (120%) was never touched by the Viewer's.
+            page.locator("#to-library").click()
+            expect(page.locator("#library")).to_be_visible()
+            expect(page.locator("#lib-zoom-level")).to_have_text("120%")
+            assert page.locator("#lib-scroll").evaluate("el => el.style.zoom") == "1.2"
+
+            context.close()
+            browser.close()
+
+
+def test_library_zoom_controls_sit_at_far_right_of_header(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        _create_deck(client, "Right Edge Deck", "z4-1")
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1280, "height": 800})
+            page = context.new_page()
+            page.goto(base_url + "/", wait_until="networkidle")
+            expect(page.locator("#library")).to_be_visible()
+
+            # Z4 (human rejection rej_01M33NJ2M906P7ZM): the zoom controls sit
+            # flush against the header's own right padding edge - to the right
+            # of "New group", not merely somewhere right of the search box -
+            # and that holds regardless of the zoom level or a search filter
+            # narrowing the dashboard content below.
+            def right_edge_gap() -> float:
+                bar = page.locator("#lib-bar").bounding_box()
+                zoom = page.locator("#lib-zoom-controls").bounding_box()
+                return (bar["x"] + bar["width"]) - (zoom["x"] + zoom["width"])
+
+            new_group_box = page.locator("#lib-new-group").bounding_box()
+            zoom_box = page.locator("#lib-zoom-controls").bounding_box()
+            assert zoom_box["x"] > new_group_box["x"] + new_group_box["width"]
+            assert right_edge_gap() == pytest.approx(16, abs=1)
+
+            page.locator("#lib-zoom-in").click()
+            page.locator("#lib-zoom-in").click()
+            expect(page.locator("#lib-zoom-level")).to_have_text("120%")
+            assert right_edge_gap() == pytest.approx(16, abs=1)
+
+            page.locator("#lib-search").fill("Right Edge")
+            assert right_edge_gap() == pytest.approx(16, abs=1)
+            page.locator("#lib-search").fill("")
+
+            context.close()
+            browser.close()
+
+
+# ---------------------------------------------------------------------------
+# N1/N2/N3 - Viewer rail deck click is a single navigation owner (T0016 2)
+# ---------------------------------------------------------------------------
+
+def test_viewer_rail_click_moves_actual_deck_content(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        group_a = _create_group(client, "Group A")
+        a1 = _create_deck(client, "A1", "n1-a1")
+        a2 = _create_deck(client, "A2", "n1-a2")
+        a3 = _create_deck(client, "A3", "n1-a3")
+        for index, deck in enumerate([a1, a2, a3]):
+            _move_deck(client, deck["id"], group_a["id"], index)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1100, "height": 800})
+            page = context.new_page()
+            page.goto(base_url + "/#" + a1["id"], wait_until="networkidle")
+            expect(page.locator("#app")).to_be_visible()
+            expect(page.locator("#bar .title")).to_have_text("A1")
+
+            # N1: a rail click on a different deck moves currentId, the hash, the
+            # title, and - the part earlier coverage only checked indirectly - the
+            # actual iframe URL and rendered content.
+            page.locator(f'#deck-list .deck-item[data-deck-id="{a2["id"]}"]').click()
+            expect(page.locator("#bar .title")).to_have_text("A2")
+            assert page.evaluate("location.hash") == "#" + a2["id"]
+            assert f"/v/{a2['id']}/" in page.locator("#frame-a").get_attribute("src")
+            expect(page.frame_locator("#frame-a").locator("body")).to_have_text("A2")
+            expect(
+                page.locator(f'#deck-list .deck-item[data-deck-id="{a2["id"]}"]')
+            ).to_have_class("deck-item active")
+
+            # N3: the rail still only shows Group A after switching decks from
+            # inside it.
+            assert set(_rail_deck_ids(page)) == {a1["id"], a2["id"], a3["id"]}
+
+            context.close()
+            browser.close()
+
+
+def test_viewer_rail_rapid_clicks_settle_on_last_deck(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        group_a = _create_group(client, "Group A")
+        a1 = _create_deck(client, "A1", "n2-a1")
+        a2 = _create_deck(client, "A2", "n2-a2")
+        a3 = _create_deck(client, "A3", "n2-a3")
+        for index, deck in enumerate([a1, a2, a3]):
+            _move_deck(client, deck["id"], group_a["id"], index)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1100, "height": 800})
+            page = context.new_page()
+            page.goto(base_url + "/#" + a1["id"], wait_until="networkidle")
+            expect(page.locator("#app")).to_be_visible()
+
+            # N2: click through A2 then A3 back-to-back without waiting for A2's
+            # own async screens/version fetches to settle first. currentId's guard
+            # (`if (currentId === id) ...`) must stop A2's late responses from
+            # clobbering A3's state once everything resolves.
+            page.locator(f'#deck-list .deck-item[data-deck-id="{a2["id"]}"]').click()
+            page.locator(f'#deck-list .deck-item[data-deck-id="{a3["id"]}"]').click()
+
+            expect(page.locator("#bar .title")).to_have_text("A3")
+            assert page.evaluate("location.hash") == "#" + a3["id"]
+            assert f"/v/{a3['id']}/" in page.locator("#frame-a").get_attribute("src")
+            expect(page.frame_locator("#frame-a").locator("body")).to_have_text("A3")
+            expect(
+                page.locator(f'#deck-list .deck-item[data-deck-id="{a3["id"]}"]')
+            ).to_have_class("deck-item active")
+            # Only one deck is ever marked active - no leftover A2 highlight.
+            assert page.locator("#deck-list .deck-item.active").count() == 1
+
+            context.close()
+            browser.close()
+
+
+# N4 - T0016 review rej_01M33H6TVQ61HBCX: openDeckFromHash() itself needs a
+# latest-wins guard, not just selectDeck()'s currentId check. N2 above never
+# exercised that gap because both rail clicks race over an unthrottled local
+# server, so in practice the first request usually still wins the network too.
+# This test forces the exact ordering the review described - A2's very first
+# network request (ensureDecksLoaded()'s GET /api/v1/decks) is held open until
+# *after* A3's entire navigation (network + rendering) has already settled,
+# then released - and checks every piece of Viewer chrome the review named:
+# hash, title, frame URL/content, version list, screen chrome, and rail
+# highlight.
+#
+# The hold is done by monkey-patching window.fetch in-page (a manually
+# resolved gate Promise) rather than delaying via Playwright's page.route() +
+# time.sleep(): a Python route handler runs on the same thread that also
+# drives every other synchronous Playwright call in this test, so blocking it
+# with time.sleep() blocks the second .click() too (confirmed by instrumenting
+# both approaches side by side while building this test) - the two navigations
+# end up serialized instead of actually racing, and the test would pass
+# whether or not the underlying bug was fixed. Gating fetch() in-page keeps
+# both clicks - and both requests - firing back-to-back for real, and lets the
+# test release A2's request on demand only once A3 has fully settled.
+def test_viewer_rail_rapid_clicks_settle_on_last_deck_with_reversed_network(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    manifest = {
+        "screens": [
+            {"key": "overview", "tag": "Overview", "entry": "overview/index.html"},
+            {"key": "details", "tag": "Details", "entry": "details/index.html"},
+        ]
+    }
+    a2_payload_v1 = _zip(
+        {
+            "screens.json": json.dumps(manifest),
+            "index.html": "<!doctype html><html><body>A2</body></html>",
+            "overview/index.html": "<!doctype html><html><body>A2 overview</body></html>",
+            "details/index.html": "<!doctype html><html><body>A2 details</body></html>",
+        }
+    )
+    a2_payload_v2 = _zip(
+        {
+            "screens.json": json.dumps(manifest),
+            "index.html": "<!doctype html><html><body>A2 v2</body></html>",
+            "overview/index.html": "<!doctype html><html><body>A2 overview v2</body></html>",
+            "details/index.html": "<!doctype html><html><body>A2 details v2</body></html>",
+        }
+    )
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        group_a = _create_group(client, "Group A")
+        a1 = _create_deck(client, "A1", "n4-a1")
+        # A2 is deliberately given a second version and a 2-screen manifest -
+        # distinct enough from A3's single-version, single-screen shape that any
+        # leftover A2 state (version list, scope-switch) would be obvious.
+        a2 = _create_deck(client, "A2", "n4-a2", a2_payload_v1)
+        added = client.post(
+            f"/api/v1/decks/{a2['id']}/versions",
+            files={"file": ("deck.zip", a2_payload_v2, "application/zip")},
+            data={"idempotency_key": "n4-a2-v2"},
+        )
+        assert added.status_code == 201, added.text
+        a3 = _create_deck(client, "A3", "n4-a3")
+        for index, deck in enumerate([a1, a2, a3]):
+            _move_deck(client, deck["id"], group_a["id"], index)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1100, "height": 800})
+            page = context.new_page()
+
+            page.goto(base_url + "/#" + a1["id"], wait_until="networkidle")
+            expect(page.locator("#app")).to_be_visible()
+
+            # Installed only after the initial load has already settled, so the
+            # first GET /api/v1/decks it sees is the one A2's click triggers -
+            # not the initial-page-load request. That first call is parked on a
+            # gate Promise (never rejected, never timed out - just held) until
+            # the test explicitly releases it below.
+            page.evaluate(
+                """() => {
+                    const originalFetch = window.fetch.bind(window);
+                    let decksCallCount = 0;
+                    let releaseFirst;
+                    const gate = new Promise(resolve => { releaseFirst = resolve; });
+                    window.__releaseFirstDecksFetch = () => releaseFirst();
+                    window.fetch = (url, opts) => {
+                        if (typeof url === 'string' && url.endsWith('/api/v1/decks')) {
+                            decksCallCount += 1;
+                            if (decksCallCount === 1) {
+                                return gate.then(() => originalFetch(url, opts));
+                            }
+                        }
+                        return originalFetch(url, opts);
+                    };
+                }"""
+            )
+
+            page.locator(f'#deck-list .deck-item[data-deck-id="{a2["id"]}"]').click()
+            page.locator(f'#deck-list .deck-item[data-deck-id="{a3["id"]}"]').click()
+
+            # A3's own decks fetch is the second call, so it's never gated -
+            # its whole navigation (network + rendering) settles for real
+            # while A2's first fetch is still parked on the open gate.
+            expect(page.locator("#bar .title")).to_have_text("A3")
+            expect(page.frame_locator("#frame-a").locator("body")).to_have_text("A3")
+
+            # Only now - after A3 has genuinely finished - let A2's held-back
+            # decks fetch actually run against the real server and resolve.
+            page.evaluate("window.__releaseFirstDecksFetch()")
+            page.wait_for_timeout(500)
+
+            expect(page.locator("#bar .title")).to_have_text("A3")
+            assert page.evaluate("location.hash") == "#" + a3["id"]
+            assert f"/v/{a3['id']}/" in page.locator("#frame-a").get_attribute("src")
+            expect(page.frame_locator("#frame-a").locator("body")).to_have_text("A3")
+
+            # A3 has one version and one (default) screen - if A2's delayed
+            # navigation had been allowed to land after the fact, it would have
+            # left its own 2-version history and visible screen switcher behind.
+            expect(page.locator("#scope-switch")).to_be_hidden()
+            expect(page.locator("#version-list .version-card")).to_have_count(1)
+
+            expect(
+                page.locator(f'#deck-list .deck-item[data-deck-id="{a3["id"]}"]')
+            ).to_have_class("deck-item active")
+            assert page.locator("#deck-list .deck-item.active").count() == 1
+
+            # Give any further stragglers one more beat, then re-check that A3
+            # is still the settled state - not just transiently true.
+            page.wait_for_timeout(300)
+            expect(page.locator("#bar .title")).to_have_text("A3")
+            assert page.evaluate("location.hash") == "#" + a3["id"]
+
+            context.close()
+            browser.close()
+
+
+# N5 - T0016 review rej_01M33JG3BQCB2DAF: openDeckFromHash()'s navGeneration
+# guard (N4 above) only stops a stale call from reaching showViewerScreen()
+# onward - it never stopped loadRailScope() itself from writing the *shared*
+# railScopeIds the moment its own /api/v1/library response landed, regardless
+# of whether that call was still the latest one. N4 never caught this because
+# it only reverses /api/v1/decks (which loadRailScope() never touches) and
+# only ever moves within a single group, so a stale railScopeIds write there
+# is indistinguishable from a correct one.
+#
+# This test reverses /api/v1/library instead, across two *different* groups:
+# A2's own library lookup (fired by a click that's immediately superseded) is
+# held open until after B1's entire navigation - a different group - has
+# already settled for real. The corruption this guards against is silent: the
+# DOM isn't wrong the instant the stale response lands, since nothing calls
+# renderDecks() again on its own. It only surfaces on the next renderDecks()
+# call for an unrelated reason (here, picking a different screen in B1's own
+# tree) - exactly the path the review named - so the test deliberately
+# triggers one after releasing the gate and checks the rail is still Group B,
+# not reverted to Group A.
+def test_viewer_rail_cross_group_navigation_settles_on_current_group_with_reversed_network(
+    connected_server,
+):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    manifest = {
+        "screens": [
+            {"key": "overview", "tag": "Overview", "entry": "overview/index.html"},
+            {"key": "details", "tag": "Details", "entry": "details/index.html"},
+        ]
+    }
+    b1_payload = _zip(
+        {
+            "screens.json": json.dumps(manifest),
+            "index.html": "<!doctype html><html><body>B1</body></html>",
+            "overview/index.html": "<!doctype html><html><body>B1 overview</body></html>",
+            "details/index.html": "<!doctype html><html><body>B1 details</body></html>",
+        }
+    )
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        group_a = _create_group(client, "Group A")
+        group_b = _create_group(client, "Group B")
+        a1 = _create_deck(client, "A1", "n5-a1")
+        a2 = _create_deck(client, "A2", "n5-a2")
+        for index, deck in enumerate([a1, a2]):
+            _move_deck(client, deck["id"], group_a["id"], index)
+        # B1 is deliberately multi-screen - distinct enough that selecting one
+        # of its own screens after the gate release is a real, independently
+        # motivated action, not something only there to poke at the bug.
+        b1 = _create_deck(client, "B1", "n5-b1", b1_payload)
+        b2 = _create_deck(client, "B2", "n5-b2")
+        for index, deck in enumerate([b1, b2]):
+            _move_deck(client, deck["id"], group_b["id"], index)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1100, "height": 800})
+            page = context.new_page()
+
+            page.goto(base_url + "/#" + a1["id"], wait_until="networkidle")
+            expect(page.locator("#app")).to_be_visible()
+
+            # Installed only after the initial load has already settled, so the
+            # first GET /api/v1/library it sees is the one A2's own loadRailScope()
+            # fires - not the initial-page-load request. That call is parked on a
+            # gate Promise (never rejected, never timed out - just held) until the
+            # test explicitly releases it below. window.__libraryCallCount is
+            # exposed so the test can wait until A2's fetch has actually started
+            # (and is parked) before firing B1's navigation - openDeckFromHash()
+            # re-checks navGeneration right before loadRailScope() too, so if B1
+            # superseded A2 before A2 even got this far, A2 would bail out having
+            # never called loadRailScope() at all, and this test would be
+            # exercising nothing.
+            page.evaluate(
+                """() => {
+                    const originalFetch = window.fetch.bind(window);
+                    window.__libraryCallCount = 0;
+                    let releaseFirst;
+                    const gate = new Promise(resolve => { releaseFirst = resolve; });
+                    window.__releaseFirstLibraryFetch = () => releaseFirst();
+                    window.fetch = (url, opts) => {
+                        if (typeof url === 'string' && url.endsWith('/api/v1/library')) {
+                            window.__libraryCallCount += 1;
+                            if (window.__libraryCallCount === 1) {
+                                return gate.then(() => originalFetch(url, opts));
+                            }
+                        }
+                        return originalFetch(url, opts);
+                    };
+                }"""
+            )
+
+            # A2's own rail click starts a navigation whose loadRailScope() fetch
+            # is the gated first call. B1 itself is reached the same way a typed
+            # hash, bookmark, or browser back/forward would reach it (the code's
+            # own openDeckFromHash() comment calls all of these equivalent entry
+            # points) - not a rail click, since Group B's decks are never part of
+            # A1/A2's own rail scope to begin with.
+            page.locator(f'#deck-list .deck-item[data-deck-id="{a2["id"]}"]').click()
+            # Wait until A2's loadRailScope() has actually reached its
+            # /api/v1/library fetch (and is now parked on the gate) before
+            # superseding it - otherwise A2's own navGeneration re-check would
+            # make it bail out before ever calling loadRailScope() at all.
+            page.wait_for_function("window.__libraryCallCount === 1")
+            # B1 is a different group entirely; its own loadRailScope() fetch is
+            # the second call, never gated, so its whole navigation (network +
+            # rendering) settles for real while A2's first fetch is still
+            # parked on the open gate.
+            page.evaluate("id => { location.hash = id; }", b1["id"])
+
+            expect(page.locator("#bar .title")).to_have_text("B1")
+            assert page.evaluate("location.hash") == "#" + b1["id"]
+            assert set(_rail_deck_ids(page)) == {b1["id"], b2["id"]}
+
+            # Only now - after B1 has genuinely finished - let A2's held-back
+            # library fetch actually run against the real server and resolve.
+            page.evaluate("window.__releaseFirstLibraryFetch()")
+            page.wait_for_timeout(500)
+
+            # The DOM doesn't necessarily change the instant the stale response
+            # lands - loadRailScope() resolving late no longer triggers a
+            # render on its own. The corruption this guards against only shows
+            # up on the *next* renderDecks() call, so force one via an
+            # unrelated, legitimate action: picking B1's other screen.
+            page.locator(".screen-tree .screen-item", has_text="Details").click()
+
+            expect(page.locator("#bar .title")).to_have_text("B1")
+            assert page.evaluate("location.hash") == "#" + b1["id"]
+            assert f"/v/{b1['id']}/" in page.locator("#frame-a").get_attribute("src")
+            expect(page.frame_locator("#frame-a").locator("body")).to_have_text("B1 details")
+
+            # The rail must still be Group B - not reverted to Group A by A2's
+            # stale (but now-resolved) loadRailScope() response.
+            assert set(_rail_deck_ids(page)) == {b1["id"], b2["id"]}
+            expect(
+                page.locator(f'#deck-list .deck-item[data-deck-id="{b1["id"]}"]')
+            ).to_have_class("deck-item active")
+            assert page.locator("#deck-list .deck-item.active").count() == 1
+
+            # Give any further stragglers one more beat, then re-check that B1
+            # is still the settled state - not just transiently true.
+            page.wait_for_timeout(300)
+            expect(page.locator("#bar .title")).to_have_text("B1")
+            assert page.evaluate("location.hash") == "#" + b1["id"]
+            assert set(_rail_deck_ids(page)) == {b1["id"], b2["id"]}
+
+            context.close()
+            browser.close()
+
+
+# ---------------------------------------------------------------------------
+# H1/H2 - Group-wide drop highlight has a symmetric top/bottom gap (T0016 3)
+# ---------------------------------------------------------------------------
+
+def _group_cards_gap(page: Page, group_id: str) -> tuple[float, float]:
+    return page.evaluate(
+        """(groupId) => {
+            const cards = document.querySelector(`.lib-group[data-group-id="${groupId}"] .lib-group-cards`);
+            const box = cards.getBoundingClientRect();
+            const children = Array.from(cards.children);
+            const tops = children.map(child => child.getBoundingClientRect().top);
+            const bottoms = children.map(child => child.getBoundingClientRect().bottom);
+            const top = Math.min(...tops);
+            const bottom = Math.max(...bottoms);
+            return [top - box.top, box.bottom - bottom];
+        }""",
+        group_id,
+    )
+
+
+def test_group_drop_highlight_has_symmetric_vertical_gap(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        group_a = _create_group(client, "Group A")
+        a1 = _create_deck(client, "A1", "h1-a1")
+        a2 = _create_deck(client, "A2", "h1-a2")
+        for index, deck in enumerate([a1, a2]):
+            _move_deck(client, deck["id"], group_a["id"], index)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1100, "height": 800})
+            page = context.new_page()
+            page.goto(base_url + "/", wait_until="networkidle")
+            expect(page.locator("#library")).to_be_visible()
+
+            # H1: simulate the "drop onto the whole group" highlight state (the
+            # same class dropDeck()'s dragover handler applies to .lib-group-cards)
+            # and confirm the highlighted box has an equal gap above and below the
+            # deck cards it wraps - before the fix the top padding (8px) left a
+            # visible gap the bottom padding (0px) did not.
+            page.evaluate(
+                """(groupId) => {
+                    document.querySelector(`.lib-group[data-group-id="${groupId}"] .lib-group-cards`)
+                        .classList.add('deck-drop-target');
+                }""",
+                group_a["id"],
+            )
+            top_gap, bottom_gap = _group_cards_gap(page, group_a["id"])
+            assert top_gap > 0 and bottom_gap > 0
+            assert abs(top_gap - bottom_gap) < 1.0, f"top={top_gap} bottom={bottom_gap}"
+
+            context.close()
+            browser.close()
+
+
+def test_group_drop_highlight_symmetric_when_empty_filtered_collapsed_and_zoomed(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        empty_group = _create_group(client, "Empty Group")
+        group_a = _create_group(client, "Group A")
+        a1 = _create_deck(client, "Alpha One", "h2-a1")
+        a2 = _create_deck(client, "Alpha Two", "h2-a2")
+        for index, deck in enumerate([a1, a2]):
+            _move_deck(client, deck["id"], group_a["id"], index)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1100, "height": 800})
+            page = context.new_page()
+            page.goto(base_url + "/", wait_until="networkidle")
+            expect(page.locator("#library")).to_be_visible()
+
+            # H2a: an empty group's highlighted box still wraps its "No decks"
+            # placeholder with an equal gap on both sides.
+            page.evaluate(
+                """(groupId) => {
+                    document.querySelector(`.lib-group[data-group-id="${groupId}"] .lib-group-cards`)
+                        .classList.add('deck-drop-target');
+                }""",
+                empty_group["id"],
+            )
+            top_gap, bottom_gap = _group_cards_gap(page, empty_group["id"])
+            assert abs(top_gap - bottom_gap) < 1.0, f"empty group: top={top_gap} bottom={bottom_gap}"
+
+            # H2b: search filter narrows the visible groups, highlight stays symmetric.
+            page.locator("#lib-search").fill("Alpha")
+            expect(page.locator(f'.lib-group[data-group-id="{group_a["id"]}"]')).to_be_visible()
+            page.evaluate(
+                """(groupId) => {
+                    document.querySelector(`.lib-group[data-group-id="${groupId}"] .lib-group-cards`)
+                        .classList.add('deck-drop-target');
+                }""",
+                group_a["id"],
+            )
+            top_gap, bottom_gap = _group_cards_gap(page, group_a["id"])
+            assert abs(top_gap - bottom_gap) < 1.0, f"filtered: top={top_gap} bottom={bottom_gap}"
+            page.locator("#lib-search").fill("")
+
+            # H2c: collapsed group - the cards row is hidden, but the header still
+            # accepts the drop-target highlight class (unaffected by the padding fix).
+            page.locator(f'.lib-group[data-group-id="{group_a["id"]}"] .lib-group-toggle').click()
+            assert page.locator(f'.lib-group[data-group-id="{group_a["id"]}"]').evaluate(
+                "el => el.classList.contains('collapsed')"
+            )
+            page.evaluate(
+                """(groupId) => {
+                    document.querySelector(`.lib-group[data-group-id="${groupId}"] .lib-group-header`)
+                        .classList.add('deck-drop-target');
+                }""",
+                group_a["id"],
+            )
+            assert page.locator(
+                f'.lib-group[data-group-id="{group_a["id"]}"] .lib-group-header'
+            ).evaluate("el => el.classList.contains('deck-drop-target')")
+            page.locator(f'.lib-group[data-group-id="{group_a["id"]}"] .lib-group-toggle').click()
+
+            # H2d: Library zoom scales the whole dashboard uniformly, so the gap
+            # stays symmetric (though its pixel size changes with the zoom factor).
+            page.locator("#lib-zoom-in").click()
+            page.locator("#lib-zoom-in").click()
+            expect(page.locator("#lib-zoom-level")).to_have_text("120%")
+            page.evaluate(
+                """(groupId) => {
+                    document.querySelector(`.lib-group[data-group-id="${groupId}"] .lib-group-cards`)
+                        .classList.add('deck-drop-target');
+                }""",
+                group_a["id"],
+            )
+            top_gap, bottom_gap = _group_cards_gap(page, group_a["id"])
+            assert abs(top_gap - bottom_gap) < 1.5, f"zoomed: top={top_gap} bottom={bottom_gap}"
+
+            context.close()
+            browser.close()
+
+
+# ---------------------------------------------------------------------------
+# R1/R2/R3 - Viewer rail scope fails closed, never falls back to every deck
+# (T0016 4)
+# ---------------------------------------------------------------------------
+
+def test_viewer_rail_scope_fails_closed_on_library_error(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        group_a = _create_group(client, "Group A")
+        a1 = _create_deck(client, "A1", "r1-a1")
+        a2 = _create_deck(client, "A2", "r1-a2")
+        a3 = _create_deck(client, "A3", "r1-a3")
+        for index, deck in enumerate([a1, a2, a3]):
+            _move_deck(client, deck["id"], group_a["id"], index)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1100, "height": 800})
+            page = context.new_page()
+            page.route(
+                "**/api/v1/library",
+                lambda route: route.fulfill(status=500, content_type="application/json", body="{}"),
+            )
+
+            # R1: /api/v1/library returning 500 must fail closed to just the
+            # current deck, never the full deck list.
+            page.goto(base_url + "/#" + a2["id"], wait_until="networkidle")
+            expect(page.locator("#app")).to_be_visible()
+            expect(page.locator("#bar .title")).to_have_text("A2")
+            assert _rail_deck_ids(page) == [a2["id"]]
+
+            context.close()
+            browser.close()
+
+
+def test_viewer_rail_scope_fails_closed_on_missing_membership(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        group_a = _create_group(client, "Group A")
+        a1 = _create_deck(client, "A1", "r2-a1")
+        a2 = _create_deck(client, "A2", "r2-a2")
+        for index, deck in enumerate([a1, a2]):
+            _move_deck(client, deck["id"], group_a["id"], index)
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1100, "height": 800})
+            page = context.new_page()
+            empty_library = {"groups": [], "ungrouped": {"decks": []}}
+            page.route(
+                "**/api/v1/library",
+                lambda route: route.fulfill(
+                    status=200, content_type="application/json", body=json.dumps(empty_library)
+                ),
+            )
+
+            # R2: a 200 /api/v1/library that simply doesn't list the current deck
+            # anywhere (grouped or Ungrouped) must also fail closed, not fall back
+            # to unscoped.
+            page.goto(base_url + "/#" + a2["id"], wait_until="networkidle")
+            expect(page.locator("#app")).to_be_visible()
+            expect(page.locator("#bar .title")).to_have_text("A2")
+            assert _rail_deck_ids(page) == [a2["id"]]
+
+            context.close()
+            browser.close()
+
+
+def test_viewer_rail_order_matches_library_group_order(connected_server):
+    base_url, token = connected_server
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
+        group_a = _create_group(client, "Group A")
+        a1 = _create_deck(client, "A1", "r3-a1")
+        a2 = _create_deck(client, "A2", "r3-a2")
+        a3 = _create_deck(client, "A3", "r3-a3")
+        # Registration order is a1, a2, a3, but Library's own (server-authoritative)
+        # order is customized to a3, a1, a2 - the rail must reflect that order, not
+        # /api/v1/decks' registration order (T0016 4).
+        for index, deck in enumerate([a3, a1, a2]):
+            _move_deck(client, deck["id"], group_a["id"], index)
+        assert _section_ids(client.get("/api/v1/library").json(), group_a["id"]) == [
+            a3["id"], a1["id"], a2["id"],
+        ]
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            context = browser.new_context(viewport={"width": 1100, "height": 800})
+            page = context.new_page()
+            page.goto(base_url + "/#" + a1["id"], wait_until="networkidle")
+            expect(page.locator("#app")).to_be_visible()
+
+            # R3: the rail's DOM order (not just membership) matches Library's.
+            assert _rail_deck_ids(page) == [a3["id"], a1["id"], a2["id"]]
 
             context.close()
             browser.close()

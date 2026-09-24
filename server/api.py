@@ -250,6 +250,21 @@ def _screen_viewer_path(entry: str) -> str:
     return entry
 
 
+def _view_root(repo: DeckRepository, deck_id: str, version_no: int, root_url: str):
+    """Serve a version root, or redirect a rootless manifest to its first screen."""
+    target = storage.resolve_asset(settings, deck_id, version_no, "")
+    if target is not None:
+        return FileResponse(target)
+
+    row = repo.get_version(deck_id, version_no)
+    if row and row.get("screens_json"):
+        first_screen = _version_screens(row, "")[0]
+        viewer_path = _screen_viewer_path(first_screen["entry"])
+        return RedirectResponse(url=f"{root_url}{viewer_path}")
+
+    raise HTTPException(status_code=404, detail="not found")
+
+
 # --- deck + version write endpoints ---------------------------------------
 
 @api_router.post("/decks", status_code=201)
@@ -821,6 +836,8 @@ def view_version_asset(
     repo: DeckRepository = Depends(get_repo),
 ):
     target_version = _resolve_read_version(repo, deck_id, version_no)
+    if not asset_path:
+        return _view_root(repo, deck_id, target_version, f"/v/{deck_id}/v{version_no}/")
     target = storage.resolve_asset(settings, deck_id, target_version, asset_path)
     if target is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -836,6 +853,8 @@ def view_asset(
     active = _active_version(repo, deck_id)
     if active is None:
         raise HTTPException(status_code=404, detail="not found")
+    if not asset_path:
+        return _view_root(repo, deck_id, active, f"/v/{deck_id}/")
     target = storage.resolve_asset(settings, deck_id, active, asset_path)
     if target is None:
         raise HTTPException(status_code=404, detail="not found")

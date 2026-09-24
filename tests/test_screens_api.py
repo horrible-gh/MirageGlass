@@ -79,6 +79,90 @@ def test_manifest_zip_registers_multiple_screens(app_client, auth_headers):
     assert "settings v1" in app_client.get(f"/v/{deck_id}/settings/").text
 
 
+def test_viewer_root_keeps_single_screen_behavior(app_client, auth_headers):
+    deck = _create(
+        app_client,
+        auth_headers,
+        make_zip({"index.html": "<html><body>single root</body></html>"}),
+        "screens-viewer-single-root",
+    )
+
+    root = app_client.get(f"/v/{deck['id']}/", follow_redirects=False)
+    assert root.status_code == 200
+    assert "single root" in root.text
+
+
+def test_manifest_viewer_root_prefers_existing_index(app_client, auth_headers):
+    screens = [{"key": "first", "tag": "First", "entry": "first/index.html"}]
+    deck = _create(
+        app_client,
+        auth_headers,
+        _manifest_zip(
+            screens,
+            {
+                "index.html": "<html><body>manifest root</body></html>",
+                "first/index.html": "<html><body>first screen</body></html>",
+            },
+        ),
+        "screens-viewer-manifest-root",
+    )
+
+    root = app_client.get(f"/v/{deck['id']}/", follow_redirects=False)
+    assert root.status_code == 200
+    assert "manifest root" in root.text
+
+
+def test_rootless_manifest_roots_redirect_to_first_screen(app_client, auth_headers):
+    screens = [
+        {"key": "first", "tag": "First", "entry": "first/index.html"},
+        {"key": "second", "tag": "Second", "entry": "second/index.html"},
+    ]
+    v1 = _create(
+        app_client,
+        auth_headers,
+        _manifest_zip(
+            screens,
+            {
+                "first/index.html": "<html><body>first v1</body></html>",
+                "second/index.html": "<html><body>second v1</body></html>",
+            },
+        ),
+        "screens-viewer-rootless-v1",
+    )
+    deck_id = v1["id"]
+
+    stable_root = app_client.get(f"/v/{deck_id}/", follow_redirects=False)
+    assert stable_root.status_code == 307
+    assert stable_root.headers["location"] == f"/v/{deck_id}/first/"
+    assert "first v1" in app_client.get(stable_root.headers["location"]).text
+
+    v2 = app_client.post(
+        f"/api/v1/decks/{deck_id}/versions",
+        headers=auth_headers,
+        files=_files(
+            _manifest_zip(
+                screens,
+                {
+                    "first/index.html": "<html><body>first v2</body></html>",
+                    "second/index.html": "<html><body>second v2</body></html>",
+                },
+            )
+        ),
+        data={"idempotency_key": "screens-viewer-rootless-v2"},
+    )
+    assert v2.status_code == 201, v2.text
+
+    version_root = app_client.get(f"/v/{deck_id}/v2/", follow_redirects=False)
+    assert version_root.status_code == 307
+    assert version_root.headers["location"] == f"/v/{deck_id}/v2/first/"
+    assert "first v2" in app_client.get(version_root.headers["location"]).text
+
+    assert "second v2" in app_client.get(f"/v/{deck_id}/second/").text
+    assert "second v2" in app_client.get(f"/v/{deck_id}/v2/second/").text
+    assert app_client.get(f"/v/{deck_id}/missing.html").status_code == 404
+    assert app_client.get(f"/v/{deck_id}/v99/").status_code == 404
+
+
 def test_screen_history_only_counts_its_own_changes(app_client, auth_headers):
     screens = [
         {"key": "a", "tag": "Screen A", "entry": "a/index.html"},

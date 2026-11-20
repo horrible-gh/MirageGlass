@@ -52,7 +52,8 @@ async def cache_policy(request: Request, call_next):
     if path == "/" or path.startswith(("/api/v1/", "/v/", "/thumbs/")):
         response.headers["Cache-Control"] = (
             "public, max-age=31536000, immutable"
-            if _VERSIONED_VIEWER.match(path)
+            if request.method == "GET" and response.status_code == 200
+            and _VERSIONED_VIEWER.match(path)
             else "no-store"
         )
     return response

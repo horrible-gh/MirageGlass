@@ -6,6 +6,7 @@ Run with: uvicorn server.main:app --reload --port 8100
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -37,6 +38,24 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="MirageGlass", version="0.1.0", lifespan=lifespan)
 app.include_router(api_router)
 app.include_router(public_router)
+
+# The SPA shell and moving "active" URLs must never be served stale. Versioned
+# viewer URLs are immutable: the upload flow never changes a ready version's
+# extracted source, so they can be cached safely and efficiently.
+_VERSIONED_VIEWER = re.compile(r"^/v/[^/]+/v[1-9][0-9]*/")
+
+
+@app.middleware("http")
+async def cache_policy(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith(("/api/v1/", "/v/", "/thumbs/")):
+        response.headers["Cache-Control"] = (
+            "public, max-age=31536000, immutable"
+            if _VERSIONED_VIEWER.match(path)
+            else "no-store"
+        )
+    return response
 
 
 @app.get("/healthz")

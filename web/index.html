@@ -497,6 +497,13 @@ function visibleRailDecks() {
   return railScopeIds.map(id => byId.get(id)).filter(Boolean);
 }
 
+function versionedThumbUrl(deck) {
+  // Bust thumbnails cached before the active version changed.
+  return deck.thumb_url
+    ? deck.thumb_url + '?v=' + encodeURIComponent(deck.active_version)
+    : null;
+}
+
 function renderDecks() {
   const list = document.getElementById('deck-list');
   if (!decks.length) {
@@ -512,7 +519,7 @@ function renderDecks() {
     item.className = 'deck-item' + (deck.id === currentId ? ' active' : '');
     item.dataset.deckId = deck.id;
     const preview = deck.thumb_url
-      ? `<img class="thumb" src="${esc(deck.thumb_url)}" alt="">`
+      ? `<img class="thumb" src="${esc(versionedThumbUrl(deck))}" alt="">`
       : `<div class="card">${String(index + 1).padStart(2, '0')}</div>`;
     // A deck with more than one version advertises the count so the reader knows
     // history exists before selecting it (the badge sits on its own line to avoid
@@ -665,11 +672,11 @@ function versionUrl(version) {
   return '/v/' + encodeURIComponent(currentId) + '/v' + encodeURIComponent(version) + '/' + screenPath();
 }
 
-// The single pane serves the active version through the stable /v/{id}/ link and any
-// other ready version through its read-only /v/{id}/v{n}/ route.
+// Every ready version, including the active one, uses its immutable version URL.
+// The public /v/{id}/ URL remains stable for externally shared links.
 function singleFrameUrl(version) {
   const deck = decks.find(item => item.id === currentId);
-  if (version != null && version !== activeVersionNo()) return versionUrl(version);
+  if (version != null) return versionUrl(version);
   return deck ? deck.viewer_url + screenPath() : '';
 }
 
@@ -735,7 +742,7 @@ function setMode(nextMode) {
     const deck = decks.find(item => item.id === currentId);
     if (deck) {
       viewingVersion = activeVersionNo();
-      document.getElementById('frame-a').src = deck.viewer_url + screenPath();
+      document.getElementById('frame-a').src = singleFrameUrl(viewingVersion);
     }
   }
   renderVersions();
@@ -751,7 +758,8 @@ async function fetchVersionData(id) {
   if (scope === 'screen' && currentScreenKey) {
     const response = await fetch(
       '/api/v1/decks/' + encodeURIComponent(id) + '/screens/'
-        + encodeURIComponent(currentScreenKey) + '/versions'
+        + encodeURIComponent(currentScreenKey) + '/versions',
+      { cache: 'no-store' }
     );
     if (!response.ok) throw new Error('Version history is unavailable.');
     const data = await response.json();
@@ -770,7 +778,7 @@ async function fetchVersionData(id) {
       latest_version: latestItem ? latestItem.version : null,
     };
   }
-  const response = await fetch('/api/v1/decks/' + encodeURIComponent(id) + '/versions');
+  const response = await fetch('/api/v1/decks/' + encodeURIComponent(id) + '/versions', { cache: 'no-store' });
   if (!response.ok) throw new Error('Version history is unavailable.');
   const data = await response.json();
   const items = (data.items || []).map(item => ({ ...item, label: item.version }));
@@ -850,14 +858,14 @@ async function selectDeck(id) {
   document.querySelectorAll('#scope-switch button').forEach(button => {
     button.setAttribute('aria-pressed', String(button.dataset.scope === scope));
   });
-  document.getElementById('frame-a').src = deck.viewer_url;
+  document.getElementById('frame-a').src = versionUrl(deck.active_version);
   document.getElementById('frame-b').removeAttribute('src');
   setMode('single');
   renderDecks();
   renderVersions();
 
   try {
-    const response = await fetch('/api/v1/decks/' + encodeURIComponent(id) + '/screens');
+    const response = await fetch('/api/v1/decks/' + encodeURIComponent(id) + '/screens', { cache: 'no-store' });
     if (response.ok && currentId === id) {
       const data = await response.json();
       screens = data.items || [];
@@ -925,12 +933,8 @@ document.getElementById('download-version').onclick = downloadSelectedVersion;
 // so every apiRequest() call is inherently a console-session request already.
 async function reestablishConsoleSession() {
   try {
-    // cache: 'no-store' is load-bearing, not decoration: GET / has no explicit
-    // Cache-Control (it is a plain FileResponse), so a browser can serve a repeat
-    // same-URL fetch entirely from its HTTP cache with no network round trip at
-    // all - which means no fresh Set-Cookie ever reaches the cookie jar, and every
-    // retry after the first would silently fail forever. Forcing the network hit
-    // is what actually reissues the session.
+    // Force a network request, including for clients that still have an old
+    // cached copy of / from before the server's no-store policy was introduced.
     const response = await fetch('/', { method: 'GET', credentials: 'same-origin', cache: 'no-store' });
     return response.ok;
   } catch (error) {
@@ -941,7 +945,10 @@ async function reestablishConsoleSession() {
 }
 
 async function apiRequest(url, options, _retried) {
-  const response = await fetch(url, options);
+  const requestOptions = !options || !options.method || options.method.toUpperCase() === 'GET'
+    ? { ...options, cache: 'no-store' }
+    : options;
+  const response = await fetch(url, requestOptions);
   if (response.ok) {
     if (response.status === 204) return null;
     return response.json();
@@ -982,10 +989,13 @@ async function showFailureAlert(error, title) {
 
 async function setActiveVersion(deckId, versionNo) {
   try {
-    await apiRequest(
+    const updated = await apiRequest(
       '/api/v1/decks/' + encodeURIComponent(deckId) + '/versions/' + encodeURIComponent(versionNo) + '/activate',
       { method: 'POST' }
     );
+    const index = decks.findIndex(deck => deck.id === deckId);
+    if (index !== -1) decks[index] = { ...decks[index], ...updated };
+    renderDecks();
     await loadVersionData();
   } catch (error) {
     await loadVersionData();
@@ -1818,7 +1828,7 @@ function buildDeckCard(deck, options = {}) {
   thumb.className = 'lib-card-thumb';
   if (deck.thumb_url) {
     const img = document.createElement('img');
-    img.src = deck.thumb_url;
+    img.src = versionedThumbUrl(deck);
     img.alt = '';
     thumb.appendChild(img);
   } else {
@@ -2160,7 +2170,7 @@ function showViewerScreen() {
 async function ensureDecksLoaded() {
   if (decksLoaded) return;
   try {
-    const response = await fetch('/api/v1/decks');
+    const response = await fetch('/api/v1/decks', { cache: 'no-store' });
     const data = await response.json();
     decks = data.items || [];
     decksLoadFailed = false;
@@ -2193,7 +2203,7 @@ async function ensureDecksLoaded() {
 // (and whether) a resolved scope is actually current enough to commit.
 async function loadRailScope(deckId) {
   try {
-    const response = await fetch('/api/v1/library');
+    const response = await fetch('/api/v1/library', { cache: 'no-store' });
     if (!response.ok) throw new Error('library unavailable');
     const library = await response.json();
     const group = library.groups.find(item => item.decks.some(deck => deck.id === deckId));

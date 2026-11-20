@@ -741,7 +741,7 @@ function setMode(nextMode) {
     // Switching to the single pane always returns to the deck's active version.
     const deck = decks.find(item => item.id === currentId);
     if (deck) {
-      viewingVersion = activeVersionNo();
+      viewingVersion = activeVersionNo() ?? deck.active_version;
       document.getElementById('frame-a').src = singleFrameUrl(viewingVersion);
     }
   }
@@ -858,7 +858,6 @@ async function selectDeck(id) {
   document.querySelectorAll('#scope-switch button').forEach(button => {
     button.setAttribute('aria-pressed', String(button.dataset.scope === scope));
   });
-  document.getElementById('frame-a').src = versionUrl(deck.active_version);
   document.getElementById('frame-b').removeAttribute('src');
   setMode('single');
   renderDecks();

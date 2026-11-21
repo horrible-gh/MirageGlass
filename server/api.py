@@ -28,7 +28,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse, RedirectResponse
-from pydantic import BaseModel, StrictInt
+from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr, field_validator
 from starlette.background import BackgroundTask
 
 from . import storage, thumbnail
@@ -51,6 +51,7 @@ public_router = APIRouter(tags=["public"])
 # version number before giving up.
 _VERSION_CLAIM_ATTEMPTS = 5
 _NAME_MAX_LENGTH = 120
+_NOTE_MAX_LENGTH = 4000
 _DISALLOWED_NAME_CATEGORIES = {"Cc", "Cf", "Cs"}
 
 
@@ -65,6 +66,34 @@ class DeckMovePayload(BaseModel):
 
 class GroupMovePayload(BaseModel):
     index: StrictInt
+
+
+class DeckSelectionPayload(BaseModel):
+    deck_ids: list[StrictStr] = Field(min_length=1, max_length=1000)
+
+    @field_validator("deck_ids")
+    @classmethod
+    def unique_nonempty_ids(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() for value in values) or len(set(values)) != len(values):
+            raise ValueError("deck_ids must contain unique, nonempty IDs.")
+        return values
+
+
+class BulkDeckMovePayload(DeckSelectionPayload):
+    group_id: Optional[StrictStr] = None
+    index: StrictInt = Field(ge=0)
+
+
+class FavoritePayload(BaseModel):
+    favorite: StrictBool
+
+
+class BulkFavoritePayload(DeckSelectionPayload, FavoritePayload):
+    pass
+
+
+class VersionNotePayload(BaseModel):
+    note: StrictStr = Field(max_length=_NOTE_MAX_LENGTH)
 
 
 def get_repo() -> DeckRepository:
@@ -107,6 +136,33 @@ def _organization_not_found(error: OrganizationNotFound) -> HTTPException:
     )
 
 
+def _normalize_note(value: str) -> str:
+    if len(value) > _NOTE_MAX_LENGTH or any(
+        unicodedata.category(char) == "Cs"
+        or (unicodedata.category(char) == "Cc" and char not in "\t\n\r")
+        for char in value
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_note",
+                "message": "A note can contain up to 4000 characters and no control characters except whitespace.",
+            },
+        )
+    return value
+
+
+def _version_to_public(row: dict, active_version: Optional[int]) -> dict:
+    return {
+        "version": row["version_no"],
+        "status": row["status"],
+        "has_thumb": bool(row["has_thumb"]),
+        "is_active": row["version_no"] == active_version,
+        "created_at": row["created_at"],
+        "note": row.get("note", ""),
+    }
+
+
 # --- version helpers ------------------------------------------------------
 
 def _clear_failed_version(repo: DeckRepository, row: dict) -> None:
@@ -115,7 +171,7 @@ def _clear_failed_version(repo: DeckRepository, row: dict) -> None:
     repo.delete_version(row["deck_id"], row["version_no"])
 
 
-def _claim_next_version(repo: DeckRepository, deck_id: str, idempotency_key: str):
+def _claim_next_version(repo: DeckRepository, deck_id: str, idempotency_key: str, note: str = ""):
     """Insert a fresh processing version row and return its number.
 
     ``(deck_id, version_no)`` is the primary key, so a concurrent uploader that
@@ -129,7 +185,7 @@ def _claim_next_version(repo: DeckRepository, deck_id: str, idempotency_key: str
     for _ in range(_VERSION_CLAIM_ATTEMPTS):
         next_no = (repo.max_version(deck_id) or 0) + 1
         try:
-            repo.create_version(deck_id, next_no, idempotency_key)
+            repo.create_version(deck_id, next_no, idempotency_key, note)
             return next_no, None
         except Exception:
             replay = repo.get_version_by_idempotency_key(idempotency_key)
@@ -273,6 +329,7 @@ def create_deck(
     file: UploadFile = File(...),
     name: str = Form(...),
     idempotency_key: str = Form(...),
+    note: str = Form(default=""),
     _: str = Depends(require_management_write),
     repo: DeckRepository = Depends(get_repo),
 ):
@@ -284,6 +341,7 @@ def create_deck(
             # A replay did not create anything, so it is 200, not 201.
             response.status_code = 200
             return to_public(repo.get(existing["deck_id"]))
+        _normalize_note(note)
         # A failed registration must not hold the key forever. Clear the version,
         # and if that empties its deck (the usual case for a failed create) drop
         # the empty container too, then start over.
@@ -294,10 +352,11 @@ def create_deck(
             repo.delete_deck(prev_deck)
 
     # 2) A brand new deck is a container plus its version 1.
+    note = _normalize_note(note)
     deck_id = new_deck_id()
     repo.create_deck(deck_id, name)
     try:
-        repo.create_version(deck_id, 1, idempotency_key)
+        repo.create_version(deck_id, 1, idempotency_key, note)
     except Exception:
         # A concurrent create won the key. Our empty container is useless.
         repo.delete_deck(deck_id)
@@ -317,11 +376,12 @@ def add_version(
     response: Response,
     file: UploadFile = File(...),
     idempotency_key: str = Form(...),
+    note: str = Form(default=""),
     _: str = Depends(require_management_write),
     repo: DeckRepository = Depends(get_repo),
 ):
     # name is intentionally not accepted here: the deck name is stable and a
-    # version upload only carries file + idempotency_key. Any extra field is
+    # version upload carries file, idempotency_key and an optional note. A name is
     # ignored by FastAPI.
     if not repo.get(deck_id):
         raise HTTPException(status_code=404, detail="not found")
@@ -331,15 +391,35 @@ def add_version(
         if existing["status"] != "failed":
             response.status_code = 200
             return to_public(repo.get(existing["deck_id"]))
+        _normalize_note(note)
         _clear_failed_version(repo, existing)
 
-    version_no, replay = _claim_next_version(repo, deck_id, idempotency_key)
+    note = _normalize_note(note)
+    version_no, replay = _claim_next_version(repo, deck_id, idempotency_key, note)
     if replay is not None:
         response.status_code = 200
         return to_public(repo.get(replay["deck_id"]))
 
     _process_upload_into_version(file, repo, deck_id, version_no)
     return to_public(repo.get(deck_id))
+
+
+@api_router.patch("/decks/{deck_id}/versions/{version_no}")
+def update_version_note(
+    deck_id: str,
+    version_no: int,
+    payload: VersionNotePayload,
+    _: str = Depends(require_management_write),
+    repo: DeckRepository = Depends(get_repo),
+):
+    deck = repo.get(deck_id)
+    if not deck:
+        raise HTTPException(status_code=404, detail="not found")
+    try:
+        row = repo.set_version_note(deck_id, version_no, _normalize_note(payload.note))
+    except OrganizationNotFound as error:
+        raise _organization_not_found(error)
+    return _version_to_public(row, deck.get("active_version"))
 
 
 @api_router.post("/decks/{deck_id}/versions/{version_no}/activate")
@@ -366,6 +446,56 @@ def activate_version(
 @api_router.get("/library")
 def get_library(repo: DeckRepository = Depends(get_repo)):
     return repo.list_library()
+
+
+@api_router.post("/decks/move")
+def move_decks(
+    payload: BulkDeckMovePayload,
+    _: str = Depends(require_management_write),
+    repo: DeckRepository = Depends(get_repo),
+):
+    try:
+        return repo.move_decks(payload.deck_ids, payload.group_id, payload.index)
+    except OrganizationNotFound as error:
+        raise _organization_not_found(error)
+
+
+@api_router.put("/decks/favorites")
+def set_favorites(
+    payload: BulkFavoritePayload,
+    _: str = Depends(require_management_write),
+    repo: DeckRepository = Depends(get_repo),
+):
+    try:
+        return repo.set_favorites(payload.deck_ids, payload.favorite)
+    except OrganizationNotFound as error:
+        raise _organization_not_found(error)
+
+
+@api_router.put("/decks/{deck_id}/favorite")
+def set_favorite(
+    deck_id: str,
+    payload: FavoritePayload,
+    _: str = Depends(require_management_write),
+    repo: DeckRepository = Depends(get_repo),
+):
+    try:
+        repo.set_favorites([deck_id], payload.favorite)
+    except OrganizationNotFound as error:
+        raise _organization_not_found(error)
+    return repo.get_library_deck(deck_id) or to_public(repo.get(deck_id))
+
+
+@api_router.post("/decks/{deck_id}/visit")
+def record_visit(
+    deck_id: str,
+    _: str = Depends(require_management_write),
+    repo: DeckRepository = Depends(get_repo),
+):
+    try:
+        return repo.record_visit(deck_id)
+    except OrganizationNotFound as error:
+        raise _organization_not_found(error)
 
 
 @api_router.post("/groups", status_code=201)
@@ -464,16 +594,7 @@ def list_versions(deck_id: str, repo: DeckRepository = Depends(get_repo)):
     if not deck:
         raise HTTPException(status_code=404, detail="not found")
     active = deck.get("active_version")
-    items = [
-        {
-            "version": row["version_no"],
-            "status": row["status"],
-            "has_thumb": bool(row["has_thumb"]),
-            "is_active": row["version_no"] == active,
-            "created_at": row["created_at"],
-        }
-        for row in repo.list_versions(deck_id)
-    ]
+    items = [_version_to_public(row, active) for row in repo.list_versions(deck_id)]
     return {
         "deck_id": deck_id,
         "active_version": active,
@@ -536,7 +657,11 @@ def list_screen_versions(
         if digest is None or digest == last_hash:
             continue
         last_hash = digest
-        history.append({"deck_version": row["version_no"], "created_at": row["created_at"]})
+        history.append({
+            "deck_version": row["version_no"],
+            "created_at": row["created_at"],
+            "note": row.get("note", ""),
+        })
 
     if not history:
         raise HTTPException(status_code=404, detail="screen not found")
@@ -557,6 +682,7 @@ def list_screen_versions(
             "version": index + 1,
             "deck_version": entry["deck_version"],
             "created_at": entry["created_at"],
+            "note": entry["note"],
             "is_active": index == active_index,
         }
         for index, entry in enumerate(history)
@@ -656,8 +782,19 @@ def help_document():
                 "POST /api/v1/decks/{deck_id}/versions",
                 "POST /api/v1/decks/{deck_id}/versions/{version_no}/activate",
                 "DELETE /api/v1/decks/{deck_id}",
+                "POST /api/v1/groups",
+                "PATCH /api/v1/groups/{group_id}",
+                "DELETE /api/v1/groups/{group_id}",
+                "POST /api/v1/groups/{group_id}/move",
+                "PATCH /api/v1/decks/{deck_id}",
+                "POST /api/v1/decks/{deck_id}/move",
+                "POST /api/v1/decks/move",
+                "PUT /api/v1/decks/{deck_id}/favorite",
+                "PUT /api/v1/decks/favorites",
+                "POST /api/v1/decks/{deck_id}/visit",
+                "PATCH /api/v1/decks/{deck_id}/versions/{version_no}",
             ],
-            "note": "Read operations, including version listing, deck downloads and file manifests, need no auth.",
+            "note": "Every management write accepts the configured Bearer token. The first-party browser may instead use a same-origin HttpOnly console session when enabled. Read operations, including library, versions, downloads and file manifests, need no auth.",
         },
         "workflow": [
             "1) POST /api/v1/decks to register a zip as a new deck = version 1 (multipart: file, name, idempotency_key)",
@@ -666,7 +803,17 @@ def help_document():
             "4) GET /api/v1/decks/{id}/versions to list every version and see which one is active",
             "5) GET /v/{id}/v{n}/ to render a specific ready version without changing the active shared link",
             "6) POST /api/v1/decks/{id}/versions/{n}/activate to roll the active version back to an earlier one",
+            "7) GET /api/v1/library, create or rename groups, then POST /api/v1/decks/move to organize several decks atomically. Use group_id=null to remove group membership.",
+            "8) PUT a favorite value, POST a visit, or PATCH a version note to share those changes between the console and API agents. Notes may also be supplied with the original multipart upload.",
         ],
+        "library_model": {
+            "groups": "Real group records with stable IDs and ordered decks. Duplicate display names are allowed; use IDs in writes.",
+            "ungrouped": "A separate section for decks with group_id=null, not a group record.",
+            "favorite": "A shared server-owned boolean on each deck. PUT sets a value rather than toggling it, making retries safe.",
+            "last_viewed_at": "A shared UTC timestamp or null. Only POST .../visit records a visit; ordinary GETs do not change it. Sort descending for recents.",
+            "note": "Plain-text version metadata, up to 4000 characters. Editing it never changes immutable version files or the active pointer.",
+            "bulk_move": "deck_ids is an ordered list of 1..1000 unique IDs. Validate every ID and target before writing; either the whole move commits or nothing changes. index is zero-based in the target AFTER removing selected IDs and clamps to the target end. Retrying the same payload preserves the resulting order if no concurrent write intervenes. There is no revision precondition; refresh and reconcile concurrent changes before retrying a write whose outcome is uncertain.",
+        },
         "endpoints": [
             {
                 "method": "POST",
@@ -677,6 +824,7 @@ def help_document():
                     "file": "The zip file. It must contain index.html at its root.",
                     "name": "Display name of the deck. Send it as UTF-8.",
                     "idempotency_key": "Replaying the same key returns the existing deck with 200 instead of creating a new one.",
+                    "note": "Optional version-1 note, up to 4000 characters. Defaults to an empty string. An idempotent replay does not replace the saved note.",
                 },
                 "status_codes": {
                     "201": "Newly registered",
@@ -690,13 +838,13 @@ def help_document():
                 "method": "POST",
                 "path": "/api/v1/decks/{deck_id}/versions",
                 "auth": True,
-                "description": "Add a new version to an existing deck. multipart/form-data (file, idempotency_key). The deck name is not changed and any name field is ignored. 201 when a new version is created, 200 on a replay of the same idempotency_key, 404 if the deck does not exist. A rejected upload (400/500) leaves the active version untouched.",
+                "description": "Add a new version to an existing deck. multipart/form-data (file, idempotency_key, optional note). The deck name is not changed and any name field is ignored. 201 when a new version is created, 200 on a replay of the same idempotency_key, 404 if the deck does not exist. A rejected upload (400/500) leaves the active version untouched.",
             },
             {
                 "method": "GET",
                 "path": "/api/v1/decks/{deck_id}/versions",
                 "auth": False,
-                "description": "List every version of a deck in ascending order, with active_version, latest_version and per-version status/has_thumb/is_active. 404 if the deck does not exist.",
+                "description": "List every version of a deck in ascending order, with active_version, latest_version and per-version status/has_thumb/is_active/note. 404 if the deck does not exist.",
             },
             {
                 "method": "GET",
@@ -708,13 +856,85 @@ def help_document():
                 "method": "GET",
                 "path": "/api/v1/decks/{deck_id}/screens/{screen_key}/versions",
                 "auth": False,
-                "description": "A single screen's own change history, derived from the deck's version chain and relabeled 1..N - so two screens in the same deck can report different counts. 404 if the screen never appears in a ready version.",
+                "description": "A single screen's own change history, derived from the deck's version chain and relabeled 1..N - so two screens in the same deck can report different counts. Each entry includes the note of its backing deck_version. 404 if the screen never appears in a ready version.",
             },
             {
                 "method": "POST",
                 "path": "/api/v1/decks/{deck_id}/versions/{version_no}/activate",
                 "auth": True,
                 "description": "Roll the deck's active version back to an earlier, ready version. 200 on success, 404 if the deck or version is missing, 409 if that version is not ready. History is preserved.",
+            },
+            {
+                "method": "GET",
+                "path": "/api/v1/library",
+                "auth": False,
+                "description": "Read ordered groups and a separate ungrouped section. Each deck includes group_id, sort_order, favorite, last_viewed_at, version counts and screen_count. This is the shared state used by the console and API agents.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/v1/groups",
+                "auth": True,
+                "description": "Create a group at the front of the group order. JSON: {name:string}. Returns the new group with a stable id (201). Names are trimmed, 1..120 characters; duplicate names are allowed.",
+            },
+            {
+                "method": "PATCH",
+                "path": "/api/v1/groups/{group_id}",
+                "auth": True,
+                "description": "Rename one group. JSON: {name:string}. Identity, members and order stay unchanged. Returns the group (200); 404 missing, 422 invalid name.",
+            },
+            {
+                "method": "DELETE",
+                "path": "/api/v1/groups/{group_id}",
+                "auth": True,
+                "description": "Delete only the group and append its ordered decks to ungrouped, atomically. No deck or version is deleted. 204 success, 404 missing.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/v1/groups/{group_id}/move",
+                "auth": True,
+                "description": "Move one group in the sidebar order. JSON: {index:integer}. Index addresses the remaining groups, clamped to 0..N. Returns the moved group (200).",
+            },
+            {
+                "method": "PATCH",
+                "path": "/api/v1/decks/{deck_id}",
+                "auth": True,
+                "description": "Rename a deck. JSON: {name:string}. Stable links, versions, membership and order stay unchanged. Returns the deck (200); 404 missing, 422 invalid name.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/v1/decks/{deck_id}/move",
+                "auth": True,
+                "description": "Move or reorder one deck atomically. JSON: {group_id:string|null,index:integer}. Use null for ungrouped. Index addresses target siblings without the moving deck and is clamped to 0..N. Returns the deck (200). The existing single-deck API remains supported.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/v1/decks/move",
+                "auth": True,
+                "description": "Move or reorder an entire selection in one transaction. JSON: {deck_ids:[string,...],group_id:string|null,index:nonnegative integer}. Caller order is preserved; index addresses the target after removing selected IDs. Returns the complete library (200). 404 missing deck/group, 422 empty/duplicate selection or invalid input. A failure changes nothing.",
+            },
+            {
+                "method": "PUT",
+                "path": "/api/v1/decks/{deck_id}/favorite",
+                "auth": True,
+                "description": "Set a shared favorite value. JSON: {favorite:boolean}. Returns the updated deck (200); 404 missing, 422 invalid value. Repeating the request is safe.",
+            },
+            {
+                "method": "PUT",
+                "path": "/api/v1/decks/favorites",
+                "auth": True,
+                "description": "Set favorites for 1..1000 unique decks atomically. JSON: {deck_ids:[string,...],favorite:boolean}. Returns the complete library (200); 404 missing deck, 422 invalid selection/value. Useful for importing browser pins without clearing favorites on other decks.",
+            },
+            {
+                "method": "POST",
+                "path": "/api/v1/decks/{deck_id}/visit",
+                "auth": True,
+                "description": "Record an explicit visit and return the updated deck with last_viewed_at (UTC). A repeated request records the newer visit time. GET requests never record visits. 200 success, 404 missing.",
+            },
+            {
+                "method": "PATCH",
+                "path": "/api/v1/decks/{deck_id}/versions/{version_no}",
+                "auth": True,
+                "description": "Update a version note. JSON: {note:string}, up to 4000 characters; empty string clears it. Returns the version entry (200). Does not modify stored content, content hashes, URLs or active_version. 404 missing deck/version, 422 invalid note.",
             },
             {
                 "method": "GET",
@@ -726,7 +946,7 @@ def help_document():
                 "method": "GET",
                 "path": "/api/v1/decks/{deck_id}",
                 "auth": False,
-                "description": "A single deck, including its active version and latest_version. 404 if it does not exist.",
+                "description": "A single deck, including its active version, latest_version, group_id, sort_order, favorite and last_viewed_at. 404 if it does not exist.",
             },
             {
                 "method": "GET",
@@ -807,11 +1027,14 @@ def help_document():
             "A failed thumbnail capture still leaves the registration successful (ready). Check the thumb field to see whether one exists.",
             "A registration that ended as failed is retried from scratch under the same idempotency_key: the leftovers are cleaned up first.",
             "A downloaded zip is rebuilt from the stored source rather than copied byte-for-byte from the upload. Re-registering it through POST /api/v1/decks creates a new deck id and viewer URL; use POST .../versions to keep the same link.",
-            "The deck name does not change when you upload a new version. name is a deck attribute; a version upload sends only file and idempotency_key, and any name field is ignored.",
+            "The deck name does not change when you upload a new version. name is a deck attribute; a version upload sends file, idempotency_key and an optional note, and any name field is ignored.",
             "/v/{id}/ and /thumbs/{id}.png always serve the deck's active version, so the shared links stay stable. Use the separate /v/{id}/v{n}/ path to view a specific ready version without changing the active pointer.",
             "A failed version upload leaves the active version untouched: the shared link keeps serving whatever was ready before.",
             "?version=n is read only. It works on /download and /files; the only way to change the active version is POST .../versions/{n}/activate.",
             "A zip with a root screens.json registers multiple screens instead of a single index.html; each entry needs key/tag/entry and the entry file must exist in the zip. Without screens.json, a deck behaves exactly as before (one implicit screen).",
+            "Ungrouped is not a group ID. Send JSON null to remove group membership; group names are not unique identifiers.",
+            "Use one bulk move for a selection instead of independent moves: validation and ordering updates commit together. The insertion index is measured after the selected decks have been removed from the target.",
+            "Favorites and recency are now shared server metadata. A browser may import its old local pins once, but API writes and later console changes use the same durable values.",
         ],
     }
 

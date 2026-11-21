@@ -39,20 +39,25 @@ def test_help_requires_no_auth(app_client):
 
 def test_help_top_level_shape(help_doc):
     assert TOP_LEVEL_KEYS <= set(help_doc)
-    assert len(help_doc["workflow"]) == 6
-    assert len(help_doc["gotchas"]) == 10
-    assert len(help_doc["endpoints"]) == 16
+    assert all(isinstance(step, str) and step.strip() for step in help_doc["workflow"])
+    assert all(isinstance(item, str) and item.strip() for item in help_doc["gotchas"])
+    assert help_doc["workflow"] and help_doc["gotchas"] and help_doc["endpoints"]
+    endpoints = [(item["method"], item["path"]) for item in help_doc["endpoints"]]
+    assert len(endpoints) == len(set(endpoints)), "Each operation is documented once"
 
 
-def test_help_auth_block_lists_the_protected_endpoints(help_doc):
+def test_help_auth_block_lists_the_protected_endpoints(app_client, help_doc):
     auth = help_doc["auth"]
     assert auth["scheme"] == "Bearer"
-    assert set(auth["required_for"]) == {
-        "POST /api/v1/decks",
-        "POST /api/v1/decks/{deck_id}/versions",
-        "POST /api/v1/decks/{deck_id}/versions/{version_no}/activate",
-        "DELETE /api/v1/decks/{deck_id}",
+    paths = app_client.get("/openapi.json").json()["paths"]
+    mutations = {
+        f"{method.upper()} {path}"
+        for path, operations in paths.items()
+        if path.startswith("/api/v1/")
+        for method in operations
+        if method in {"post", "put", "patch", "delete"}
     }
+    assert set(auth["required_for"]) == mutations
 
 
 def test_every_endpoint_entry_is_complete(help_doc):
@@ -68,8 +73,8 @@ def test_create_deck_entry_documents_form_fields_and_status_codes(help_doc):
         for e in help_doc["endpoints"]
         if e["method"] == "POST" and e["path"] == "/api/v1/decks"
     )
-    assert set(entry["form_fields"]) == {"file", "name", "idempotency_key"}
-    assert set(entry["status_codes"]) == {"200", "201", "400", "401", "500"}
+    assert {"file", "name", "idempotency_key", "note"} <= set(entry["form_fields"])
+    assert {"200", "201", "400", "401", "500"} <= set(entry["status_codes"])
 
 
 def test_auth_flags_match_the_auth_block(help_doc):
@@ -98,6 +103,18 @@ def test_documented_endpoints_exist_on_the_app(app_client, help_doc):
         path = _normalize(entry["path"])
         assert path in known, f"help advertises a path that does not exist: {entry['path']}"
         assert entry["method"] in known[path], f"method mismatch: {entry}"
+
+    # Every API operation must be discoverable by an agent. Previously the help
+    # page omitted the group organization routes despite their existence.
+    documented = {(entry["method"], entry["path"]) for entry in help_doc["endpoints"]}
+    api_operations = {
+        (method.upper(), path)
+        for path, operations in paths.items()
+        if path.startswith("/api/v1/")
+        for method in operations
+        if method in {"get", "post", "put", "patch", "delete"}
+    }
+    assert api_operations <= documented
 
 
 def test_python_example_is_not_curl_based(help_doc):

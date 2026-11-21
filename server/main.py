@@ -12,6 +12,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import storage
 from .api import api_router, public_router
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="MirageGlass", version="0.1.0", lifespan=lifespan)
 app.include_router(api_router)
 app.include_router(public_router)
+app.mount("/static", StaticFiles(directory=WEB_DIR), name="console-assets")
 
 # The SPA shell and moving "active" URLs must never be served stale. Versioned
 # viewer URLs are immutable: the upload flow never changes a ready version's
@@ -49,7 +51,7 @@ _VERSIONED_VIEWER = re.compile(r"^/v/[^/]+/v[1-9][0-9]*/")
 async def cache_policy(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if path == "/" or path.startswith(("/api/v1/", "/v/", "/thumbs/")):
+    if path == "/" or path.startswith(("/static/", "/api/v1/", "/v/", "/thumbs/")):
         response.headers["Cache-Control"] = (
             "public, max-age=31536000, immutable"
             if request.method == "GET" and response.status_code == 200

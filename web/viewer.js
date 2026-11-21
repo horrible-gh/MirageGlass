@@ -16,7 +16,7 @@ let viewingVersion = null;
 let versionLoadGeneration = 0;
 let frameGeneration = 0;
 let viewerLoadGeneration = 0;
-let historyVisible = innerWidth > 760;
+let historyVisible = !readHiddenPreference('mg.history.hidden', innerWidth <= 760);
 const initialMode = new URLSearchParams(location.search).get('mode');
 let zoomPercent = 100;
 const versionScreens = new Map();
@@ -33,25 +33,36 @@ $('zoom-reset').onclick = () => { zoomPercent = 100; applyZoom(); };
 applyZoom();
 
 function applyRail(hidden) {
+  if (hidden && $('rail').contains(document.activeElement)) $('rail-toggle').focus({preventScroll:true});
+  $('rail').hidden = hidden;
   $('app').classList.toggle('rail-hidden', hidden);
   $('rail-toggle').setAttribute('aria-expanded', String(!hidden));
   $('rail-toggle').title = t(hidden ? 'showDecks' : 'hideDecks');
   $('rail-toggle').setAttribute('aria-label', $('rail-toggle').title);
 }
-let railHidden = innerWidth <= 760;
-try { const saved = localStorage.getItem('mg.rail.hidden'); if (saved !== null) railHidden = saved === 'true'; } catch (_) { /* Layout preferences are optional. */ }
+let railHidden = readHiddenPreference('mg.rail.hidden', innerWidth <= 760);
 applyRail(railHidden);
-$('rail-toggle').onclick = () => {
-  railHidden = !$('app').classList.contains('rail-hidden'); applyRail(railHidden);
-  try { localStorage.setItem('mg.rail.hidden', String(railHidden)); } catch (_) { /* Keep the current page preference. */ }
-};
+function setRailHidden(hidden) {
+  railHidden = hidden; applyRail(hidden);
+  saveHiddenPreference('mg.rail.hidden', hidden);
+}
+$('rail-toggle').onclick = () => setRailHidden(!railHidden);
+$('rail-close').onclick = () => setRailHidden(true);
 function applyHistory() {
+  if (!historyVisible && $('version-section').contains(document.activeElement)) $('history-toggle').focus({preventScroll:true});
   $('version-section').hidden = !historyVisible;
   $('history-toggle').setAttribute('aria-pressed', String(historyVisible));
+  $('history-toggle').setAttribute('aria-expanded', String(historyVisible));
   $('history-toggle').classList.toggle('primary', historyVisible);
   $('history-toggle').title = t(historyVisible ? 'hideHistory' : 'showHistory');
+  $('history-toggle').setAttribute('aria-label', $('history-toggle').title);
 }
-$('history-toggle').onclick = () => { historyVisible = !historyVisible; applyHistory(); };
+function setHistoryVisible(visible) {
+  historyVisible = visible; applyHistory();
+  saveHiddenPreference('mg.history.hidden', !visible);
+}
+$('history-toggle').onclick = () => setHistoryVisible(!historyVisible);
+$('history-close').onclick = () => setHistoryVisible(false);
 applyHistory();
 $('fullscreen').onclick = async () => {
   try {

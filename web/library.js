@@ -380,9 +380,34 @@ async function deleteDeck(deck) {
   catch (error) { await loadLibrary(); await showFailureAlert(error); }
 }
 
-function closeMobileMenu() { $('shell').classList.remove('menu-open'); $('mobile-shade').hidden = true; $('mobile-menu').setAttribute('aria-expanded','false'); }
-$('mobile-menu').onclick = () => { const open = !$('shell').classList.contains('menu-open'); $('shell').classList.toggle('menu-open',open); $('mobile-shade').hidden = !open; $('mobile-menu').setAttribute('aria-expanded',String(open)); };
+const sidebarMedia = matchMedia('(max-width: 760px)');
+let sidebarHidden = readHiddenPreference('mg.sidebar.hidden', false);
+function applySidebar() {
+  const mobile = sidebarMedia.matches;
+  const visible = mobile ? $('shell').classList.contains('menu-open') : !sidebarHidden;
+  const toggle = mobile ? $('mobile-menu') : $('sidebar-toggle');
+  if (!visible && $('sidebar').contains(document.activeElement)) toggle.focus({preventScroll:true});
+  $('sidebar').hidden = !visible;
+  $('sidebar').inert = !visible;
+  $('mobile-shade').hidden = !mobile || !visible;
+  $('sidebar-toggle').setAttribute('aria-expanded', String(visible));
+  $('mobile-menu').setAttribute('aria-expanded', String(mobile && visible));
+  for (const button of [$('sidebar-toggle'), $('mobile-menu')]) {
+    button.title = t(visible ? 'hideProjects' : 'showProjects');
+    button.setAttribute('aria-label', button.title);
+  }
+}
+function setSidebarHidden(hidden) {
+  sidebarHidden = hidden; applySidebar();
+  saveHiddenPreference('mg.sidebar.hidden', hidden);
+}
+function closeMobileMenu() { $('shell').classList.remove('menu-open'); applySidebar(); }
+$('sidebar-toggle').onclick = () => setSidebarHidden(!sidebarHidden);
+$('sidebar-close').onclick = () => { if (sidebarMedia.matches) closeMobileMenu(); else setSidebarHidden(true); };
+$('mobile-menu').onclick = () => { $('shell').classList.toggle('menu-open'); applySidebar(); };
 $('mobile-shade').onclick = closeMobileMenu;
+sidebarMedia.addEventListener('change', closeMobileMenu);
+applySidebar();
 document.querySelectorAll('#sidebar > .side-link,#nav-ungrouped').forEach(button => { button.onclick = () => setNav(button.dataset.nav); });
 $('nav-ungrouped').ondragover = event => { if (dragState?.kind === 'deck') { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; showDropHighlight($('nav-ungrouped'),'deck-drop-target'); } };
 $('nav-ungrouped').ondrop = event => dropDecks(event,null,null,'end');

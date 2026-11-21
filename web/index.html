@@ -13,7 +13,7 @@
 <body>
 <div class="shell" id="shell">
   <aside class="sidebar" id="sidebar" aria-label="Library navigation">
-    <a class="brand" href="#"><span class="brand-mark" aria-hidden="true"></span><span><strong>MirageGlass</strong><small>DESIGN LIBRARY</small></span></a>
+    <div class="sidebar-heading"><a class="brand" href="#"><span class="brand-mark" aria-hidden="true"></span><span><strong>MirageGlass</strong><small>DESIGN LIBRARY</small></span></a><button id="sidebar-close" class="panel-close" data-i18n-label="hideProjects" aria-controls="sidebar" data-icon="chevronLeft"></button></div>
     <div class="side-label" data-i18n="workspace"></div>
     <button class="side-link" id="nav-all" data-nav="all"><span data-icon="grid"></span><span data-i18n="all"></span><span class="count" id="nav-total"></span></button>
     <button class="side-link" id="nav-recent" data-nav="recent"><span data-icon="clock"></span><span data-i18n="recent"></span></button>
@@ -28,6 +28,7 @@
   <main class="main">
     <header class="topbar" id="lib-bar">
       <button id="mobile-menu" class="button icon-only" data-i18n-label="menu" aria-expanded="false" aria-controls="sidebar" data-icon="menu"></button>
+      <button id="sidebar-toggle" class="button icon-only subtle" data-i18n-label="hideProjects" aria-expanded="true" aria-controls="sidebar" data-icon="panelLeft"></button>
       <div id="breadcrumbs"><span class="crumb" data-i18n="library"></span><span class="crumb-divider">/</span><span class="crumb strong" id="current-crumb"></span></div>
       <div class="top-space"></div>
       <label class="search"><span data-icon="search"></span><input id="lib-search" type="search" data-i18n-label="search" data-i18n-placeholder="search"><kbd>⌘ K</kbd></label>
@@ -64,11 +65,11 @@
       <header id="bar" class="viewer-main-head">
         <div class="viewer-crumb"><button id="to-library" data-i18n="library"></button><span>›</span><span id="viewer-group"></span></div>
         <div class="viewer-title-row"><div class="viewer-title-block"><h1 class="title"></h1><span id="active-tag" class="active-tag"></span><span id="viewing-tag" class="viewing-tag" hidden></span></div>
-          <div class="viewer-actions"><button id="copy" class="button"><span data-icon="copy"></span><span data-i18n="copyLink"></span></button><div id="mode-switch" class="segmented"><button data-mode="single" aria-pressed="true" data-i18n="single"></button><button data-mode="compare" aria-pressed="false" data-i18n="compare"></button></div><button id="history-toggle" class="button primary" data-i18n="history" aria-pressed="true" aria-controls="version-section"></button><button id="viewer-more" class="button icon-only" data-i18n-label="moreActions" aria-haspopup="menu">⋮</button></div>
+          <div class="viewer-actions"><button id="copy" class="button"><span data-icon="copy"></span><span data-i18n="copyLink"></span></button><div id="mode-switch" class="segmented"><button data-mode="single" aria-pressed="true" data-i18n="single"></button><button data-mode="compare" aria-pressed="false" data-i18n="compare"></button></div><button id="history-toggle" class="button primary" aria-pressed="true" aria-expanded="true" aria-controls="version-section"><span data-icon="panelRight"></span><span data-i18n="history"></span></button><button id="viewer-more" class="button icon-only" data-i18n-label="moreActions" aria-haspopup="menu">⋮</button></div>
         </div>
       </header>
       <div class="viewer-workspace">
-        <aside id="rail"><div class="rail-heading" data-i18n="groupDecks"></div><div id="deck-list"></div></aside>
+        <aside id="rail"><div class="rail-heading"><span data-i18n="groupDecks"></span><button id="rail-close" class="panel-close" data-i18n-label="hideDecks" aria-controls="rail" data-icon="chevronLeft"></button></div><div id="deck-list"></div></aside>
         <div id="stage">
           <div class="preview-toolbar"><button id="rail-toggle" class="button icon-only subtle" aria-expanded="true" aria-controls="rail" data-i18n-label="hideDecks" data-icon="menu"></button><span id="screen-label"></span><div class="toolbar-spacer"></div><div id="zoom-controls" class="zoom-controls" data-i18n-label="viewerZoom"><button id="zoom-out" data-i18n-label="zoomOut">−</button><span id="zoom-level">100%</span><button id="zoom-in" data-i18n-label="zoomIn">+</button><button id="zoom-reset" data-i18n-label="zoomReset" data-icon="reset"></button></div><button id="download-version" class="button icon-only subtle" data-i18n-label="download" data-icon="download"></button><button id="fullscreen" class="button icon-only subtle" data-i18n-label="fullScreen" data-icon="expand"></button></div>
           <div id="compare-controls" hidden><label><span data-i18n="versionA"></span><select id="version-a" data-i18n-label="versionA"></select></label><button id="swap" class="button icon-only" data-i18n-label="swap">⇄</button><label><span data-i18n="versionB"></span><select id="version-b" data-i18n-label="versionB"></select></label></div>
@@ -77,7 +78,7 @@
             <section class="pane" id="pane-b"><div class="pane-label" id="label-b"></div><div class="frame-wrap"><iframe id="frame-b" title="Deck comparison"></iframe><p class="frame-message" id="message-b" hidden></p></div></section>
           </div>
         </div>
-        <aside id="version-section"><div class="history-head"><strong id="version-heading" data-i18n="history"></strong><span id="history-count"></span></div><div id="scope-switch" class="segmented" data-i18n-label="versionScope" hidden><button data-scope="deck" aria-pressed="true" data-i18n="scopeDeck"></button><button data-scope="screen" aria-pressed="false" data-i18n="scopeScreen"></button></div><div id="version-list"></div></aside>
+        <aside id="version-section"><div class="history-head"><strong id="version-heading" data-i18n="history"></strong><span id="history-count"></span><button id="history-close" class="panel-close" data-i18n-label="hideHistory" aria-controls="version-section" data-icon="chevronRight"></button></div><div id="scope-switch" class="segmented" data-i18n-label="versionScope" hidden><button data-scope="deck" aria-pressed="true" data-i18n="scopeDeck"></button><button data-scope="screen" aria-pressed="false" data-i18n="scopeScreen"></button></div><div id="version-list"></div></aside>
       </div>
     </section>
   </main>

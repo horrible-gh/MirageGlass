@@ -16,6 +16,15 @@ function readJsonList(key) {
   try { const value = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(value) ? value.filter(item => typeof item === 'string') : []; }
   catch (_) { return []; }
 }
+function readHiddenPreference(key, fallback) {
+  try {
+    const value = localStorage.getItem(key);
+    return value === 'true' ? true : value === 'false' ? false : fallback;
+  } catch (_) { return fallback; }
+}
+function saveHiddenPreference(key, hidden) {
+  try { localStorage.setItem(key, String(hidden)); } catch (_) { /* Keep the current page preference. */ }
+}
 function formatTimestamp(iso) {
   const date = new Date(iso);
   if (!iso || Number.isNaN(date.getTime())) return '';
@@ -34,6 +43,10 @@ const icons = {
   screen: '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/>',
   search: '<circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5"/>',
   menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+  panelLeft: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
+  panelRight: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
+  chevronLeft: '<path d="m14 6-6 6 6 6"/>',
+  chevronRight: '<path d="m10 6 6 6-6 6"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/>',
   download: '<path d="M12 3v13m-5-5 5 5 5-5M4 17v4h16v-4"/>',
   expand: '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/>',

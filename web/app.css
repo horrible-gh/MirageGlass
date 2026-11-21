@@ -33,9 +33,9 @@ button svg,[data-icon] svg {width:16px;height:16px;display:block;flex:none}
 .side-add {width:24px;height:24px;display:grid;place-items:center;border:1px solid #465770;color:#a8b6c9;border-radius:6px;background:transparent}
 .side-add:hover {background:#33435a;color:white}
 .side-add svg {width:13px;height:13px}
-#project-nav {min-height:0;flex:0 1 auto;overflow:auto;scrollbar-width:thin;scrollbar-color:#47566b transparent;padding-right:2px}
+#project-nav {min-height:0;min-width:0;flex:0 1 auto;overflow-x:hidden;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#47566b transparent;padding-right:2px}
 .project-item {display:flex;align-items:center;position:relative;border-radius:9px;flex:none}
-.project-item .side-link {min-width:0;padding-right:4px}
+.project-item .side-link {flex:1 1 auto;width:auto;min-width:0;padding-right:4px}
 .project-name {min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
 .project-dot {width:7px;height:7px;border-radius:50%;flex:none}
 .lib-group-kebab {width:25px;min-width:25px;height:32px;border-radius:6px;background:transparent;color:#9eafc8;font-size:18px}

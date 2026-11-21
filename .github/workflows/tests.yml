@@ -1,0 +1,53 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MIRAGEGLASS_TEST_SCREENSHOTS: /tmp/mirageglass-ui
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Install Chromium
+        run: |
+          python -m playwright install --with-deps chromium
+          sudo apt-get install -y fonts-noto-cjk
+      - name: Check browser script syntax
+        run: |
+          for script in web/*.js web/locales/*.js; do node --check "$script"; done
+      - name: Run API and connected browser regressions
+        run: python -m pytest -q --tb=short --junitxml=/tmp/mirageglass-tests.xml
+      - name: Retain test results and rendered screens
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: regression-results
+          path: |
+            /tmp/mirageglass-tests.xml
+            /tmp/mirageglass-ui/
+          if-no-files-found: warn
+          retention-days: 7

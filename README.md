@@ -13,6 +13,8 @@ MirageGlass is a self-hosted viewer and version manager for HTML presentation de
 - A browser dashboard for browsing versions and comparing two versions side by side
 - Optional multi-screen decks (a `screens.json` manifest groups several screens under one deck) with a per-screen or deck-wide version timeline
 - Idempotency keys for safe registration and upload retries
+- A group-scoped library with search, card/list views, range selection, and atomic bulk moves
+- Server-owned favorites, recent visits, and version notes shared by the console and API clients
 
 ## Quick start
 
@@ -97,6 +99,62 @@ A zip may declare more than one screen by including a `screens.json` manifest at
 
 Each screen needs a unique `key` (used by the API), a display `tag` chosen by whoever registers the deck, and an `entry` file that must exist in the zip. A zip without `screens.json` keeps working exactly as before: one implicit screen named after the deck. `GET /api/v1/decks/{id}/screens` lists a version's screens, and `GET /api/v1/decks/{id}/screens/{key}/versions` returns that one screen's own change history, so two screens in the same deck can show different version counts even though every upload still versions the whole deck together. The console's rail shows a screen tree once a deck reports more than one screen, with a Deck/Screen switch choosing whether the version panel follows the deck's shared timeline or the selected screen's own.
 
+## Organizing the library
+
+The sidebar selects one group at a time. **Ungrouped is a filter for decks whose
+`group_id` is `null`, not a stored group.** It sits directly below the group list.
+Each scope initially shows 24 decks; Load more reveals the next page. Search
+covers the whole library, and selecting all includes matching decks that have
+not been rendered yet. Cards and list rows use the same selection and actions.
+
+Drag one deck directly onto a sidebar group, or use Ctrl/Cmd-click and
+Shift-click to select a set and drag it together. The selection toolbar provides
+the same move action without dragging. A move is committed by the server as one
+transaction; an invalid item or failed write cannot leave half the selection in
+the destination. Group deletion keeps every deck and moves its contents to
+Ungrouped.
+
+The star beside each deck title controls its favorite state. Favorites and
+recent visits belong to this MirageGlass instance, so API agents and browsers
+see the same state. Existing browser favorites are merged into server favorites
+once after a successful write; a failed migration keeps the local data available
+for a later retry. Library display preferences, such as card/list view and zoom,
+remain browser presentation choices.
+
+The console uses the approved Korean labels through `web/locales/ko.js`.
+Implementation, API messages, and documentation remain in English.
+
+## Automating organization and editing
+
+Every persistent console operation has an API equivalent. Existing agents keep
+using `Authorization: Bearer <MIRAGEGLASS_TOKEN>` and the same upload endpoints.
+No browser session, click automation, or new registration format is required.
+Reads remain unauthenticated; every write requires the operation token or an
+enabled first-party console session.
+
+| Task | API |
+| --- | --- |
+| Read groups, ordered decks, favorites, and recent visits | `GET /api/v1/library` |
+| Create, rename, or delete a group | `POST /api/v1/groups`, `PATCH /api/v1/groups/{id}`, `DELETE /api/v1/groups/{id}` |
+| Change group order | `POST /api/v1/groups/{id}/move` |
+| Rename or delete a deck | `PATCH /api/v1/decks/{id}`, `DELETE /api/v1/decks/{id}` |
+| Move or reorder one deck | `POST /api/v1/decks/{id}/move` |
+| Move or reorder multiple decks atomically | `POST /api/v1/decks/move` |
+| Set a favorite explicitly | `PUT /api/v1/decks/{id}/favorite` |
+| Set favorites for multiple decks atomically | `PUT /api/v1/decks/favorites` |
+| Record a recent visit | `POST /api/v1/decks/{id}/visit` |
+| Read version history and notes | `GET /api/v1/decks/{id}/versions` |
+| Edit a version note | `PATCH /api/v1/decks/{id}/versions/{version}` |
+| Register, upload a version, or activate an earlier version | Existing `POST /api/v1/decks`, `POST /api/v1/decks/{id}/versions`, `POST /api/v1/decks/{id}/versions/{version}/activate` |
+| Inspect, download, or compare source versions | Existing screen, file-manifest, download, and version-specific viewer endpoints |
+
+Use real IDs from the library response, not display names. Names need not be
+unique. A `null` target moves a deck to Ungrouped; never create a group named
+Ungrouped to represent that state. See [the automation guide](docs/automation.md)
+for a complete requests-based organization workflow, ordering semantics, and
+failure handling. `/api/v1/help` and `/openapi.json` describe the running server's
+current contract.
+
 ## Project layout
 
 ```text
@@ -110,7 +168,10 @@ server/
   sql/
     queries/queries.json
     migrations/sqlite/
-web/index.html       Deck dashboard and side-by-side comparison UI
+web/index.html       Console shell
+web/*.css, web/*.js   Library, shared UI, and viewer modules served at /static/
+web/locales/ko.js     Console labels
+docs/automation.md   API-only organization and editing examples
 assets/images/       Documentation images
 requirements.txt     Runtime dependencies
 .env.example         Configuration template
@@ -132,4 +193,6 @@ storage/
 - The package and import name is `sqloader`; its upstream repository is `py_sqloader`.
 - Use an isolated virtual environment and install the versions in `requirements.txt`. The older `sqloader` 0.2.15 release has an incompatible `sqloader.init` import.
 - `/v/{id}` and `/v/{id}/v{n}` redirect with `307` to their trailing-slash forms. The trailing slash is required for relative deck assets to resolve correctly.
+- Upgrades apply additive SQLite migrations at startup. Back up `storage/` before upgrading an instance; its existing decks, groups, order, version archives, and active links are retained.
+- The console shell, its `/static/` assets, and API responses use `Cache-Control: no-store`. Immutable `/v/{id}/v{n}/` content keeps its existing long-lived cache policy.
 - On consoles using cp932, cp949, or another non-UTF-8 code page, `curl.exe -F` can corrupt non-ASCII deck names. This is a client encoding issue; automated registration should send UTF-8 multipart fields.

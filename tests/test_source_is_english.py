@@ -1,9 +1,9 @@
-"""Every published source file has to stay English.
+"""Implementation and documentation stay English; UI locales are translated.
 
-The repository is public, so comments, docstrings, API strings and UI text are all
-English. This test is the lock: it walks the tracked text files and fails on any
-Hangul it finds. Without it, one localized comment slips back in and the next
-person has to redo the whole sweep.
+The approved console uses Korean labels supplied by dedicated locale resources.
+Those resources are the only exception to the source-language rule. Comments,
+docstrings, API strings, and documentation still stay English so they remain
+readable to contributors and automation clients.
 
 Runtime artifacts (storage/, .env) are gitignored and therefore out of scope.
 """
@@ -24,6 +24,7 @@ SUFFIXES = {".py", ".md", ".html", ".css", ".js", ".json", ".sql", ".txt", ".exa
 IGNORED_DIRS = {"storage", ".venv", ".git", "__pycache__", "node_modules"}
 IGNORED_NAMES = {".env"}
 FLOWGATE_DOC = re.compile(r"^[A-Z]{1,3}\d{4}\.md$")
+LOCALE_ROOT = Path("web/locales")
 
 
 def _tracked_text_files() -> list[Path]:
@@ -32,6 +33,8 @@ def _tracked_text_files() -> list[Path]:
         if not path.is_file():
             continue
         rel = path.relative_to(PROJECT_ROOT)
+        if rel.parent == LOCALE_ROOT and rel.suffix in {".json", ".js"}:
+            continue
         if IGNORED_DIRS & set(rel.parts):
             continue
         if len(rel.parts) == 1 and FLOWGATE_DOC.fullmatch(rel.name):

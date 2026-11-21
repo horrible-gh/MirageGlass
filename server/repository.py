@@ -216,6 +216,93 @@ class DeckRepository:
         row = self.get_library_deck(deck_id)
         return row if row is not None else self.get(deck_id)
 
+    def move_decks(
+        self,
+        deck_ids: list[str],
+        target_group_id: Optional[str],
+        target_index: int,
+    ) -> dict[str, Any]:
+        """Move an ordered selection in one transaction, including cross-group selections.
+
+        The insertion index addresses the target after removing selected decks.
+        Replaying the same request produces the same membership/order when no
+        concurrent write intervenes, including selections already in the target.
+        There is no revision precondition; clients must reconcile concurrent
+        changes before retrying an operation with an uncertain outcome.
+        """
+        selected = set(deck_ids)
+        if not deck_ids or len(selected) != len(deck_ids) or target_index < 0:
+            raise ValueError("Expected unique deck IDs and a nonnegative index.")
+        with _ORGANIZATION_LOCK:
+            with self.db.begin_transaction() as tx:
+                self._begin_immediate(tx)
+                if target_group_id is not None and not tx.fetch_one(
+                    self._sql("deck_groups.get"), (target_group_id,)
+                ):
+                    raise OrganizationNotFound("group")
+                organizations = []
+                for deck_id in deck_ids:
+                    row = tx.fetch_one(self._sql("decks.get_organization"), (deck_id,))
+                    if row is None:
+                        raise OrganizationNotFound("deck")
+                    organizations.append(row)
+
+                # Validate the entire selection before changing any row.
+                sources = dict.fromkeys(row["group_id"] for row in organizations)
+                target = [
+                    deck_id for deck_id in self._deck_sibling_ids(tx, target_group_id)
+                    if deck_id not in selected
+                ]
+                index = min(target_index, len(target))
+                target[index:index] = deck_ids
+                for source_group_id in sources:
+                    if source_group_id == target_group_id:
+                        continue
+                    remaining = [
+                        deck_id for deck_id in self._deck_sibling_ids(tx, source_group_id)
+                        if deck_id not in selected
+                    ]
+                    self._write_deck_order(tx, remaining)
+                self._checkpoint("bulk_move.after_sources")
+
+                timestamp = now_iso()
+                for offset, organization in enumerate(organizations):
+                    if organization["group_id"] != target_group_id:
+                        tx.execute(
+                            self._sql("decks.set_membership"),
+                            (target_group_id, index + offset, timestamp, organization["id"]),
+                        )
+                    if offset == 0:
+                        self._checkpoint("bulk_move.after_first_membership")
+                self._write_deck_order(tx, target)
+            return self.list_library()
+
+    def set_favorites(self, deck_ids: list[str], favorite: bool) -> dict[str, Any]:
+        """Set an explicit shared value; repeated requests never toggle it back."""
+        if not deck_ids or len(set(deck_ids)) != len(deck_ids):
+            raise ValueError("Expected a nonempty selection of unique deck IDs.")
+        with _ORGANIZATION_LOCK:
+            with self.db.begin_transaction() as tx:
+                self._begin_immediate(tx)
+                for deck_id in deck_ids:
+                    if not tx.fetch_one(self._sql("decks.get_organization"), (deck_id,)):
+                        raise OrganizationNotFound("deck")
+                for index, deck_id in enumerate(deck_ids):
+                    tx.execute(self._sql("decks.set_favorite"), (int(favorite), deck_id))
+                    if index == 0:
+                        self._checkpoint("favorites.after_first")
+            return self.list_library()
+
+    def record_visit(self, deck_id: str) -> dict[str, Any]:
+        with _ORGANIZATION_LOCK:
+            with self.db.begin_transaction() as tx:
+                self._begin_immediate(tx)
+                timestamp = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+                cursor = tx.execute(self._sql("decks.record_visit"), (timestamp, deck_id))
+                if cursor.rowcount != 1:
+                    raise OrganizationNotFound("deck")
+            return self.get_library_deck(deck_id) or to_public(self.get(deck_id))
+
     # --- group reads and writes ------------------------------------------
     def get_group(self, group_id: str) -> Optional[dict[str, Any]]:
         return self.sq.fetch_one(QUERY_FILE, "deck_groups.get", (group_id,))
@@ -294,13 +381,27 @@ class DeckRepository:
         return row["n"]
 
     # --- version writes ---------------------------------------------------
-    def create_version(self, deck_id: str, version_no: int, idempotency_key: str) -> None:
+    def create_version(
+        self, deck_id: str, version_no: int, idempotency_key: str, note: str = ""
+    ) -> None:
         ts = now_iso()
         self.sq.execute(
             QUERY_FILE,
             "deck_versions.create",
-            (deck_id, version_no, idempotency_key, ts, ts),
+            (deck_id, version_no, idempotency_key, ts, ts, note),
         )
+
+    def set_version_note(self, deck_id: str, version_no: int, note: str) -> dict[str, Any]:
+        with _ORGANIZATION_LOCK:
+            with self.db.begin_transaction() as tx:
+                self._begin_immediate(tx)
+                cursor = tx.execute(
+                    self._sql("deck_versions.update_note"),
+                    (note, now_iso(), deck_id, version_no),
+                )
+                if cursor.rowcount != 1:
+                    raise OrganizationNotFound("version")
+            return self.get_version(deck_id, version_no)
 
     def set_version_status(
         self, deck_id: str, version_no: int, status: str, error_message: Optional[str] = None
@@ -330,7 +431,7 @@ class DeckRepository:
 
 
 def to_public(row: dict[str, Any]) -> dict[str, Any]:
-    """Preserve the existing public deck response exactly."""
+    """Preserve legacy fields while exposing shared organization metadata."""
     deck_id = row["id"]
     active_status = row.get("active_status")
     return {
@@ -340,8 +441,13 @@ def to_public(row: dict[str, Any]) -> dict[str, Any]:
         "viewer_url": f"/v/{deck_id}/",
         "thumb_url": f"/thumbs/{deck_id}.png" if row.get("active_has_thumb") else None,
         "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
         "version": row.get("active_version"),
         "latest_version": row.get("latest_version"),
+        "group_id": row.get("group_id"),
+        "sort_order": row.get("sort_order", 0),
+        "favorite": bool(row.get("favorite", False)),
+        "last_viewed_at": row.get("last_viewed_at"),
     }
 
 
@@ -371,4 +477,6 @@ def library_deck_to_public(row: dict[str, Any]) -> dict[str, Any]:
         "screen_count": screen_count,
         "group_id": row.get("group_id"),
         "sort_order": row["sort_order"],
+        "favorite": bool(row.get("favorite", False)),
+        "last_viewed_at": row.get("last_viewed_at"),
     }

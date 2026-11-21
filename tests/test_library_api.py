@@ -131,7 +131,9 @@ def test_library_crud_move_delete_and_legacy_compatibility(
 
     legacy_before = app_client.get("/api/v1/decks").json()["items"]
     legacy_ids_before = [deck["id"] for deck in legacy_before]
-    assert set(legacy_before[0]) == {
+    # Existing clients retain every legacy field; organization metadata is
+    # additive so token-based agents can perform the console's same operations.
+    assert {
         "id",
         "name",
         "status",
@@ -140,7 +142,9 @@ def test_library_crud_move_delete_and_legacy_compatibility(
         "created_at",
         "version",
         "latest_version",
-    }
+    } <= set(legacy_before[0])
+    assert {"favorite", "last_viewed_at", "group_id", "sort_order", "updated_at"} <= set(legacy_before[0])
+    assert isinstance(legacy_before[0]["favorite"], bool)
 
     alpha = _create_group(app_client, auth_headers, "  Duplicate  ")
     beta = _create_group(app_client, auth_headers, "Duplicate")
@@ -406,6 +410,9 @@ def test_console_session_auth_matrix_expiry_and_renewal(
 
     base_time = int(auth.time.time())
     monkeypatch.setattr(auth.time, "time", lambda: base_time)
+    # The session-scoped client may already hold a young cookie from a prior
+    # shell test. Start this issuance/expiry scenario with a fresh browser jar.
+    app_client.cookies.clear()
     root = app_client.get("/")
     assert root.status_code == 200
     cookie = root.headers["set-cookie"]

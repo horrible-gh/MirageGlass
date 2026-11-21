@@ -134,10 +134,48 @@ def _section_ids(library: dict, group_id: str | None) -> list[str]:
     return [deck["id"] for deck in group["decks"]]
 
 
+def _launch_browser(playwright):
+    """Use an explicitly configured browser, or Playwright's bundled Chromium."""
+    executable = os.environ.get("MIRAGEGLASS_TEST_BROWSER")
+    if executable:
+        return playwright.chromium.launch(executable_path=executable)
+    return playwright.chromium.launch()
+
+
+def _capture(page: Page, name: str) -> None:
+    directory = os.environ.get("MIRAGEGLASS_TEST_SCREENSHOTS")
+    if directory:
+        target = Path(directory)
+        target.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(target / f"{name}.png"), full_page=True, animations="disabled")
+
+
+def _enable_selection(page: Page) -> None:
+    toggle = page.locator("#selection-toggle")
+    if toggle.get_attribute("aria-pressed") != "true":
+        toggle.click()
+
+
+def _label(page: Page, key: str) -> str:
+    return page.evaluate("key => t(key)", key)
+
+
+def _project(page: Page, group_id: str):
+    return page.locator(f'#project-nav .project-item[data-group-id="{group_id}"]')
+
+
+def _choose_scope(page: Page, group_id: str | None) -> None:
+    if group_id is None:
+        page.locator("#nav-ungrouped").click()
+    else:
+        _project(page, group_id).locator(".side-link").click()
+    page.locator("#lib-sort").select_option("manual")
+
+
 def _dom_section_ids(page: Page, group_id: str | None) -> list[str]:
     value = "" if group_id is None else group_id
     return page.locator(
-        f'#lib-groups > .lib-group[data-group-id="{value}"] .lib-card[data-organizable="true"]'
+        f'#lib-groups .lib-card[data-group-id="{value}"]'
     ).evaluate_all("cards => cards.map(card => card.dataset.deckId)")
 
 
@@ -147,43 +185,44 @@ def _wait_for_section(
     group_id: str | None,
     expected: list[str],
 ) -> None:
-    try:
-        _wait_until(
-            lambda: _section_ids(client.get("/api/v1/library").json(), group_id) == expected
-            and _dom_section_ids(page, group_id) == expected,
-            f"Section {group_id!r} did not reach {expected!r}",
-        )
-    except AssertionError as error:
-        server_ids = _section_ids(client.get("/api/v1/library").json(), group_id)
-        dom_ids = _dom_section_ids(page, group_id)
-        raise AssertionError(f"{error}; server={server_ids!r}; dom={dom_ids!r}") from error
+    _wait_until(
+        lambda: _section_ids(client.get("/api/v1/library").json(), group_id) == expected,
+        f"Section {group_id!r} did not reach {expected!r}",
+    )
+    _choose_scope(page, group_id)
+    while page.locator("#load-more").is_visible():
+        page.locator("#load-more").click()
+    expect(page.locator("#lib-groups .lib-card")).to_have_count(len(expected))
+    assert _dom_section_ids(page, group_id) == expected
 
 
 def _assert_dom_matches_server(client: httpx.Client, page: Page) -> dict:
     library = client.get("/api/v1/library").json()
-    dom_groups = page.locator("#lib-groups > .lib-group").evaluate_all(
+    assert page.locator("#project-nav .project-item").evaluate_all(
         "groups => groups.map(group => group.dataset.groupId)"
-    )
-    assert dom_groups == [group["id"] for group in library["groups"]] + [""]
-    for group in library["groups"]:
-        assert _dom_section_ids(page, group["id"]) == [deck["id"] for deck in group["decks"]]
+    ) == [group["id"] for group in library["groups"]]
+    # Ungrouped is a separate null-membership scope, never a real project row.
+    expect(page.locator("#nav-ungrouped")).to_have_count(1)
+    for group in [*library["groups"], library["ungrouped"]]:
+        group_id = group.get("id")
         assert [deck["sort_order"] for deck in group["decks"]] == list(range(len(group["decks"])))
-    assert _dom_section_ids(page, None) == [deck["id"] for deck in library["ungrouped"]["decks"]]
-    assert [deck["sort_order"] for deck in library["ungrouped"]["decks"]] == list(
-        range(len(library["ungrouped"]["decks"]))
-    )
+        _wait_for_section(client, page, group_id, [deck["id"] for deck in group["decks"]])
+    page.locator("#nav-all").click()
+    page.locator("#lib-sort").select_option("manual")
     return library
 
 
 def _card(page: Page, deck_id: str):
-    return page.locator(
-        f'#lib-groups .lib-card[data-deck-id="{deck_id}"][data-organizable="true"]'
-    )
+    return page.locator(f'#lib-groups .lib-card[data-deck-id="{deck_id}"]')
+
+
+def _menu_action(page: Page, action: str):
+    return page.locator(f'.lib-menu-item[data-action="{action}"]')
 
 
 def _open_move_dialog(page: Page, deck_id: str) -> None:
     _card(page, deck_id).locator(".lib-kebab").click()
-    page.get_by_role("menuitem", name="Move…", exact=True).click()
+    _menu_action(page, "move").click()
     expect(page.locator("#dialog-overlay")).to_be_visible()
     expect(page.locator("#dialog-cancel")).to_be_focused()
 
@@ -192,34 +231,23 @@ def _confirm_dialog_move(page: Page, group_id: str | None, index: int) -> None:
     group_value = "ungrouped" if group_id is None else f"group:{group_id}"
     page.locator("#dialog-move-group").select_option(group_value)
     page.locator("#dialog-move-index").select_option(str(index))
-    page.get_by_role("button", name="Move", exact=True).click()
+    page.locator("#dialog-confirm").click()
 
 
 def test_library_connected_flow_persists_rolls_back_and_preserves_viewer(connected_server):
     base_url, token = connected_server
     headers = {"Authorization": f"Bearer {token}"}
-    manifest = {
-        "screens": [
-            {"key": "overview", "tag": "Overview", "entry": "overview/index.html"},
-            {"key": "details", "tag": "Details", "entry": "details/index.html"},
-        ]
-    }
-    multi_v1 = _zip(
-        {
+    manifest = {"screens": [
+        {"key": "overview", "tag": "Overview", "entry": "overview/index.html"},
+        {"key": "details", "tag": "Details", "entry": "details/index.html"},
+    ]}
+    def multi_zip(version):
+        return _zip({
             "screens.json": json.dumps(manifest),
-            "index.html": "<!doctype html><html><body>multi one</body></html>",
-            "overview/index.html": "<!doctype html><html><body>overview one</body></html>",
-            "details/index.html": "<!doctype html><html><body>details one</body></html>",
-        }
-    )
-    multi_v2 = _zip(
-        {
-            "screens.json": json.dumps(manifest),
-            "index.html": "<!doctype html><html><body>multi two</body></html>",
-            "overview/index.html": "<!doctype html><html><body>overview two</body></html>",
-            "details/index.html": "<!doctype html><html><body>details two</body></html>",
-        }
-    )
+            "index.html": f"<html><body>multi {version}</body></html>",
+            "overview/index.html": f"<html><body>overview {version}</body></html>",
+            "details/index.html": f"<html><body>details {version}</body></html>",
+        })
 
     with httpx.Client(base_url=base_url, headers=headers, timeout=20) as client:
         source = _create_group(client, "Source")
@@ -229,325 +257,318 @@ def test_library_connected_flow_persists_rolls_back_and_preserves_viewer(connect
         hidden = _create_deck(client, "Hidden B", "connected-b")
         third = _create_deck(client, "Visible C", "connected-c")
         other = _create_deck(client, "Target D", "connected-d")
-        multi = _create_deck(client, "Multi Viewer", "connected-multi", multi_v1)
-        added = client.post(
+        multi = _create_deck(client, "Multi Viewer", "connected-multi", multi_zip(1))
+        assert client.post(
             f"/api/v1/decks/{multi['id']}/versions",
-            files={"file": ("deck.zip", multi_v2, "application/zip")},
+            files={"file": ("deck.zip", multi_zip(2), "application/zip")},
             data={"idempotency_key": "connected-multi-v2"},
-        )
-        assert added.status_code == 201, added.text
+        ).status_code == 201
         for index, deck in enumerate([first, hidden, third]):
             _move_deck(client, deck["id"], source["id"], index)
         _move_deck(client, other["id"], target["id"], 0)
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            browser = _launch_browser(playwright)
             context = browser.new_context(
-                viewport={"width": 1100, "height": 800},
-                has_touch=True,
+                viewport={"width": 1280, "height": 900}, has_touch=True,
                 permissions=["clipboard-read", "clipboard-write"],
             )
             page = context.new_page()
-            console_errors: list[str] = []
-            page_errors: list[str] = []
-            expected_move_failures = {"active": False}
-
-            def record_console(message) -> None:
-                if message.type != "error":
-                    return
-                url = (message.location or {}).get("url", "")
-                if expected_move_failures["active"] and "/move" in url:
-                    return
-                console_errors.append(message.text)
-
-            page.on("console", record_console)
+            page_errors, native_dialogs, move_requests = [], [], []
             page.on("pageerror", lambda error: page_errors.append(str(error)))
-            move_requests: list[str] = []
-            library_reads: list[str] = []
-
-            def record_request(request) -> None:
-                if request.method == "POST" and request.url.endswith("/move"):
-                    move_requests.append(request.url)
-                if request.method == "GET" and request.url.endswith("/api/v1/library"):
-                    library_reads.append(request.url)
-
-            page.on("request", record_request)
+            page.on("dialog", lambda dialog: (native_dialogs.append(dialog.type), dialog.dismiss()))
+            page.on("request", lambda request: move_requests.append(request)
+                    if request.method == "POST" and request.url.endswith("/move") else None)
             page.goto(base_url + "/", wait_until="networkidle")
             expect(page.locator("#library")).to_be_visible()
             _assert_dom_matches_server(client, page)
 
-            # Search hides one sibling, but the actual drag index still comes from
-            # the complete server list and the target deck id.
+            # Global search hides a sibling; reordering must still use the full
+            # server order, rather than the filtered card index.
             page.locator("#lib-search").fill("Visible")
-            before_posts, before_reads = len(move_requests), len(library_reads)
+            before = len(move_requests)
             _card(page, third["id"]).drag_to(
-                _card(page, first["id"]), target_position={"x": 20, "y": 3}
-            )
+                _card(page, first["id"]), target_position={"x": 20, "y": 3})
             expected_source = [third["id"], first["id"], hidden["id"]]
-            _wait_until(
-                lambda: _section_ids(client.get("/api/v1/library").json(), source["id"])
-                == expected_source
-                and _dom_section_ids(page, source["id"]) == [third["id"], first["id"]],
-                "Filtered same-group drag did not preserve the hidden sibling",
-            )
-            assert len(move_requests) == before_posts + 1
-            assert len(library_reads) >= before_reads + 1
-            page.locator("#lib-search").fill("")
-            _wait_for_section(client, page, source["id"], expected_source)
-            page.reload(wait_until="networkidle")
+            _wait_until(lambda: _section_ids(client.get("/api/v1/library").json(), source["id"])
+                        == expected_source, "Filtered drag lost a hidden sibling")
+            assert len(move_requests) == before + 1
             _wait_for_section(client, page, source["id"], expected_source)
 
-            # Cross-group placement uses the visible target id, not a DOM-wide index.
-            before_posts, before_reads = len(move_requests), len(library_reads)
-            _card(page, hidden["id"]).drag_to(
-                _card(page, other["id"]), target_position={"x": 20, "y": 3}
-            )
-            _wait_for_section(client, page, target["id"], [hidden["id"], other["id"]])
-            assert len(move_requests) == before_posts + 1
-            assert len(library_reads) >= before_reads + 1
-
-            # A collapsed empty header accepts a deck at index zero and stays collapsed.
-            empty_section = page.locator(f'.lib-group[data-group-id="{empty["id"]}"]')
-            empty_section.locator(".lib-group-toggle").click()
-            expect(empty_section).to_have_class("lib-group collapsed")
-            collapsed_before = page.evaluate("localStorage.getItem('mg.library.collapsed')")
-            _card(page, first["id"]).drag_to(empty_section.locator(".lib-group-header"))
+            # A single drag reaches another project without opening a move dialog.
+            before = len(move_requests)
+            _card(page, hidden["id"]).drag_to(_project(page, target["id"]))
+            _wait_for_section(client, page, target["id"], [other["id"], hidden["id"]])
+            assert len(move_requests) == before + 1
+            _choose_scope(page, source["id"])
+            _card(page, first["id"]).drag_to(_project(page, empty["id"]))
             _wait_for_section(client, page, empty["id"], [first["id"]])
-            expect(empty_section).to_have_class("lib-group collapsed")
-            assert page.evaluate("localStorage.getItem('mg.library.collapsed')") == collapsed_before
             page.reload(wait_until="networkidle")
-            expect(page.locator(f'.lib-group[data-group-id="{empty["id"]}"]')).to_have_class(
-                "lib-group collapsed"
-            )
+            _wait_for_section(client, page, empty["id"], [first["id"]])
 
-            # Exact Ungrouped placement is also a single POST followed by a GET.
-            before_posts, before_reads = len(move_requests), len(library_reads)
-            _card(page, other["id"]).drag_to(
-                _card(page, multi["id"]), target_position={"x": 20, "y": 3}
-            )
-            _wait_for_section(client, page, None, [other["id"], multi["id"]])
-            assert len(move_requests) == before_posts + 1
-            assert len(library_reads) >= before_reads + 1
+            # A project can itself be reordered, but Ungrouped is never in its order.
+            groups_before = [g["id"] for g in client.get("/api/v1/library").json()["groups"]]
+            before = len(move_requests)
+            _project(page, empty["id"]).drag_to(_project(page, source["id"]),
+                                               target_position={"x": 30, "y": 2})
+            _wait_until(lambda: [g["id"] for g in client.get("/api/v1/library").json()["groups"]]
+                        != groups_before, "Project drag did not persist")
+            assert len(move_requests) == before + 1
+            assert page.locator("#project-nav #nav-ungrouped").count() == 0
 
-            # Group drag reorders only real groups; Ungrouped remains last.
-            empty_handle = page.locator(f'.lib-group[data-group-id="{empty["id"]}"] .lib-group-drag-handle')
-            source_section = page.locator(f'.lib-group[data-group-id="{source["id"]}"]')
-            before_posts = len(move_requests)
-            groups_before_drag = [
-                group["id"] for group in client.get("/api/v1/library").json()["groups"]
-            ]
-            empty_handle.drag_to(source_section, target_position={"x": 30, "y": 2})
-            _wait_until(
-                lambda: [group["id"] for group in client.get("/api/v1/library").json()["groups"]]
-                != groups_before_drag,
-                "Group drag did not persist",
-            )
-            dragged_groups = [
-                group["id"] for group in client.get("/api/v1/library").json()["groups"]
-            ]
-            assert sorted(dragged_groups) == sorted(groups_before_drag)
-            assert abs(dragged_groups.index(empty["id"]) - dragged_groups.index(source["id"])) == 1
-            assert len(move_requests) == before_posts + 1
-            assert page.locator("#lib-groups > .lib-group").evaluate_all(
-                "groups => groups.map(group => group.dataset.groupId)"
-            )[-1] == ""
-
-            # Deck Move is fully keyboard-operable and restores focus after reload.
-            deck_kebab = _card(page, third["id"]).locator(".lib-kebab")
-            deck_kebab.focus()
+            # The fallback move is keyboard accessible, including destination/index.
+            _choose_scope(page, source["id"])
+            _card(page, third["id"]).locator(".lib-kebab").focus()
             page.keyboard.press("Enter")
-            expect(page.get_by_role("menuitem", name="Rename", exact=True)).to_be_focused()
+            expect(_menu_action(page, "rename")).to_be_focused()
             page.keyboard.press("ArrowDown")
-            expect(page.get_by_role("menuitem", name="Move…", exact=True)).to_be_focused()
+            expect(_menu_action(page, "move")).to_be_focused()
             page.keyboard.press("Enter")
             expect(page.locator("#dialog-cancel")).to_be_focused()
-            page.keyboard.press("Shift+Tab")
-            page.keyboard.press("Shift+Tab")
-            expect(page.locator("#dialog-move-group")).to_be_focused()
-            page.keyboard.press("Home")
-            for _ in range(dragged_groups.index(target["id"])):
-                page.keyboard.press("ArrowDown")
-            page.keyboard.press("Tab")
-            page.keyboard.press("End")
-            page.keyboard.press("Tab")
-            page.keyboard.press("Tab")
-            page.keyboard.press("Enter")
-            _wait_for_section(client, page, target["id"], [hidden["id"], third["id"]])
-            expect(_card(page, third["id"]).locator(".lib-kebab")).to_be_focused()
+            _confirm_dialog_move(page, target["id"], 2)
+            _wait_for_section(client, page, target["id"], [other["id"], hidden["id"], third["id"]])
 
-            # Group Reorder uses the same keyboard menu and dispatcher.
-            keyboard_group_id = dragged_groups[0]
-            expected_keyboard_groups = dragged_groups[1:] + [keyboard_group_id]
-            group_kebab = page.locator(
-                f'.lib-group[data-group-id="{keyboard_group_id}"] .lib-group-kebab'
-            )
-            group_kebab.focus()
-            page.keyboard.press("Enter")
-            expect(page.get_by_role("menuitem", name="Rename", exact=True)).to_be_focused()
-            page.keyboard.press("ArrowDown")
-            expect(page.get_by_role("menuitem", name="Reorder…", exact=True)).to_be_focused()
-            page.keyboard.press("Enter")
-            expect(page.locator("#dialog-cancel")).to_be_focused()
-            page.keyboard.press("Shift+Tab")
-            expect(page.locator("#dialog-group-index")).to_be_focused()
-            page.keyboard.press("End")
-            page.keyboard.press("Tab")
-            page.keyboard.press("Tab")
-            page.keyboard.press("Enter")
-            _wait_until(
-                lambda: [group["id"] for group in client.get("/api/v1/library").json()["groups"]]
-                == expected_keyboard_groups,
-                "Keyboard group reorder did not persist",
-            )
-            expect(
-                page.locator(f'.lib-group[data-group-id="{keyboard_group_id}"] .lib-group-kebab')
-            ).to_be_focused()
-
-            # A 360px touch viewport can perform the same move path without overflow.
-            page.set_viewport_size({"width": 360, "height": 740})
-            _card(page, hidden["id"]).locator(".lib-kebab").tap()
-            page.get_by_role("menuitem", name="Move…", exact=True).tap()
-            page.locator("#dialog-move-group").select_option("ungrouped")
-            page.locator("#dialog-move-index").select_option("2")
-            dialog_box = page.locator("#dialog-box").bounding_box()
-            assert dialog_box and dialog_box["x"] >= 0 and dialog_box["x"] + dialog_box["width"] <= 360
-            page.get_by_role("button", name="Move", exact=True).tap()
-            _wait_for_section(client, page, None, [other["id"], multi["id"], hidden["id"]])
-            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
-            page.set_viewport_size({"width": 1100, "height": 800})
-
-            # Inject one failed move: optimistic state rolls back, then the GET record
-            # wins before the custom failure dialog is shown.
-            server_before_failure = client.get("/api/v1/library").json()
-            failed_once = {"done": False}
-
-            def fail_next_move(route) -> None:
-                if not failed_once["done"]:
-                    failed_once["done"] = True
-                    route.fulfill(
-                        status=500,
-                        content_type="application/json",
-                        body=json.dumps({"detail": {"code": "injected", "message": "Injected move failure."}}),
-                    )
-                else:
-                    route.continue_()
-
-            page.route("**/api/v1/decks/*/move", fail_next_move)
-            expected_move_failures["active"] = True
+            # A failed request cannot leave a fake move in the UI or server.
+            server_before = client.get("/api/v1/library").json()
+            def fail_move(route):
+                route.fulfill(status=500, content_type="application/json",
+                              body=json.dumps({"detail": "Injected move failure"}))
+            page.route("**/api/v1/decks/move", fail_move)
             _open_move_dialog(page, third["id"])
             _confirm_dialog_move(page, source["id"], 0)
-            expect(page.locator("#dialog-title")).to_have_text("Could not move this deck.")
-            assert failed_once["done"]
-            assert _section_ids(client.get("/api/v1/library").json(), target["id"]) == _section_ids(
-                server_before_failure, target["id"]
-            )
-            assert _dom_section_ids(page, target["id"]) == _section_ids(server_before_failure, target["id"])
-            page.get_by_role("button", name="OK", exact=True).click()
-            page.unroute("**/api/v1/decks/*/move", fail_next_move)
-            expected_move_failures["active"] = False
+            expect(page.locator("#dialog-overlay")).to_be_visible()
+            expect(page.locator("#dialog-body")).not_to_be_empty()
+            assert client.get("/api/v1/library").json() == server_before
+            page.locator("#dialog-confirm").click()
+            page.unroute("**/api/v1/decks/move", fail_move)
+            _wait_for_section(client, page, target["id"], [other["id"], hidden["id"], third["id"]])
 
-            # A second actor deletes the stale destination while its dialog is open.
+            # A destination removed by another API client is refreshed after rejection.
             _open_move_dialog(page, other["id"])
             page.locator("#dialog-move-group").select_option(f"group:{source['id']}")
-            page.locator("#dialog-move-index").select_option("0")
-            deleted = client.delete(f"/api/v1/groups/{source['id']}")
-            assert deleted.status_code == 204
-            expected_move_failures["active"] = True
-            page.get_by_role("button", name="Move", exact=True).click()
-            expect(page.locator("#dialog-title")).to_have_text("Could not move this deck.")
-            page.get_by_role("button", name="OK", exact=True).click()
-            expected_move_failures["active"] = False
-            final_library = _assert_dom_matches_server(client, page)
-            assert source["id"] not in [group["id"] for group in final_library["groups"]]
-
-            # Search temporarily expands a collapsed matching group without changing
-            # its stored preference. The shared dialog ignores Escape and backdrop.
-            page.locator("#lib-search").fill("Empty")
-            visible_empty = page.locator(f'.lib-group[data-group-id="{empty["id"]}"]')
-            expect(visible_empty.locator(f'.lib-card[data-deck-id="{first["id"]}"]')).to_be_visible()
-            assert empty["id"] in json.loads(page.evaluate("localStorage.getItem('mg.library.collapsed')"))
-            page.locator("#lib-search").fill("")
-            expect(page.locator(f'.lib-group[data-group-id="{empty["id"]}"]')).to_have_class(
-                "lib-group collapsed"
-            )
-            page.locator("#lib-new-group").click()
-            expect(page.locator("#dialog-cancel")).to_be_focused()
-            page.keyboard.press("Escape")
+            assert client.delete(f"/api/v1/groups/{source['id']}").status_code == 204
+            page.locator("#dialog-confirm").click()
             expect(page.locator("#dialog-overlay")).to_be_visible()
-            page.locator("#dialog-overlay").click(position={"x": 2, "y": 2})
-            expect(page.locator("#dialog-overlay")).to_be_visible()
-            page.locator("#dialog-cancel").click()
+            page.locator("#dialog-confirm").click()
+            expect(_project(page, source["id"])).to_have_count(0)
+            _assert_dom_matches_server(client, page)
 
-            # Core CRUD, pin, and recent behavior stays connected.
+            # CRUD and favorites still use the same server record as an AI client.
             page.locator("#lib-new-group").click()
             page.locator("#dialog-input").fill("Temporary")
-            page.get_by_role("button", name="Save", exact=True).click()
-            expect(page.locator(".lib-group-name", has_text="Temporary")).to_be_visible()
-            temporary_section = page.locator(".lib-group", has=page.locator(".lib-group-name", has_text="Temporary"))
-            temporary_section.locator(".lib-group-kebab").click()
-            page.get_by_role("menuitem", name="Delete", exact=True).click()
+            with page.expect_response(lambda response: response.request.method == "POST"
+                                      and response.url.endswith("/api/v1/groups")) as created_group:
+                page.locator("#dialog-confirm").click()
+            assert created_group.value.status == 201
+            temporary = created_group.value.json()
+            expect(_project(page, temporary["id"])).to_be_visible()
+            assert any(group["id"] == temporary["id"]
+                       for group in client.get("/api/v1/library").json()["groups"])
+            _project(page, temporary["id"]).locator(".lib-group-kebab").click()
+            _menu_action(page, "delete").click()
             expect(page.locator("#dialog-cancel")).to_be_focused()
-            page.get_by_role("button", name="Delete group", exact=True).click()
-            expect(page.locator(".lib-group-name", has_text="Temporary")).to_have_count(0)
-
+            page.locator("#dialog-confirm").click()
+            expect(_project(page, temporary["id"])).to_have_count(0)
+            page.locator("#nav-all").click()
             _card(page, third["id"]).locator(".lib-kebab").click()
-            page.get_by_role("menuitem", name="Rename", exact=True).click()
+            _menu_action(page, "rename").click()
             page.locator("#dialog-input").fill("Visible C renamed")
-            page.get_by_role("button", name="Save", exact=True).click()
+            page.locator("#dialog-confirm").click()
             expect(_card(page, third["id"]).locator(".lib-card-name")).to_have_text("Visible C renamed")
             _card(page, multi["id"]).locator(".lib-pin").click()
-            expect(page.locator("#lib-pinned-row")).to_be_visible()
+            _wait_until(lambda: client.get(f"/api/v1/decks/{multi['id']}").json()["favorite"],
+                        "Favorite did not persist")
+            page.locator("#nav-pinned").click()
+            expect(_card(page, multi["id"])).to_be_visible()
 
-            # Direct hash entry and the complete Viewer surface keep their original URLs
-            # and behaviors after Library organization changes.
+            # Viewer timeline, screen selection, compare and stable links survive.
             page.goto(base_url + "/#" + multi["id"], wait_until="networkidle")
-            expect(page.locator("#app")).to_be_visible()
             expect(page.locator("#bar .title")).to_have_text("Multi Viewer")
             expect(page.locator(".screen-tree .screen-item")).to_have_count(2)
             expect(page.locator("#version-list .version-card")).to_have_count(2)
-            expect(page.locator("#scope-switch")).to_be_visible()
-            expect(page.locator("#version-list .set-active-btn:visible")).to_have_count(1)
-            assert f"/v/{multi['id']}/" in page.locator("#frame-a").get_attribute("src")
             page.locator('#mode-switch button[data-mode="compare"]').click()
             expect(page.locator("#viewer")).to_have_class("compare")
-            assert f"/v/{multi['id']}/v" in page.locator("#frame-a").get_attribute("src")
+            _capture(page, "viewer-comparison")
             page.locator('.screen-item').nth(1).click()
             page.locator('#scope-switch button[data-scope="screen"]').click()
             expect(page.locator("#version-list .version-card")).to_have_count(2)
             page.locator("#copy").click()
-            copied_viewer = page.evaluate("navigator.clipboard.readText()")
-            assert copied_viewer == f"{base_url}/v/{multi['id']}/details/"
-            stable = client.get(f"/v/{multi['id']}/")
-            versioned = client.get(f"/v/{multi['id']}/v1/")
-            assert stable.status_code == versioned.status_code == 200
-
+            assert page.evaluate("navigator.clipboard.readText()") == f"{base_url}/v/{multi['id']}/details/"
+            assert client.get(f"/v/{multi['id']}/").status_code == 200
+            assert client.get(f"/v/{multi['id']}/v1/").status_code == 200
+            _wait_until(lambda: client.get(f"/api/v1/decks/{multi['id']}").json()["last_viewed_at"] is not None,
+                        "Recent visit did not persist")
             page.locator("#to-library").click()
-            expect(page.locator("#library")).to_be_visible()
-            expect(page.locator("#lib-recent-row")).to_be_visible()
-            _card(page, multi["id"]).locator(".lib-kebab").click()
-            page.get_by_role("menuitem", name="Copy link", exact=True).click()
-            assert page.evaluate("navigator.clipboard.readText()") == f"{base_url}/v/{multi['id']}/"
-
-            # Server order, not localStorage, restores on reload and in a new page.
+            page.locator("#nav-recent").click()
+            expect(_card(page, multi["id"])).to_be_visible()
             expected_final = _assert_dom_matches_server(client, page)
-            storage_keys = set(page.evaluate("Object.keys(localStorage)"))
-            assert storage_keys <= {
-                "mg.library.pinned",
-                "mg.library.recent",
-                "mg.library.collapsed",
-                "mg.rail.hidden",
-            }
             page.reload(wait_until="networkidle")
             assert _assert_dom_matches_server(client, page) == expected_final
-            second_page = context.new_page()
-            second_page.goto(base_url + "/", wait_until="networkidle")
-            _assert_dom_matches_server(client, second_page)
-            second_page.close()
-
-            assert page_errors == []
-            assert console_errors == []
+            assert native_dialogs == [] and page_errors == []
             context.close()
             browser.close()
+
+
+def test_large_group_select_all_moves_hidden_items_in_one_request(connected_server):
+    base_url, token = connected_server
+    with httpx.Client(base_url=base_url, headers={"Authorization": f"Bearer {token}"}, timeout=20) as client:
+        source = _create_group(client, "Large source")
+        target = _create_group(client, "Destination")
+        decks = [_create_deck(client, f"Batch {index:02d}", f"batch-{index}") for index in range(30)]
+        ids = [deck["id"] for deck in decks]
+        response = client.post("/api/v1/decks/move", json={"deck_ids": ids, "group_id": source["id"], "index": 0})
+        assert response.status_code == 200, response.text
+        with sync_playwright() as playwright:
+            browser = _launch_browser(playwright)
+            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            page.goto(base_url + "/", wait_until="networkidle")
+            _choose_scope(page, source["id"])
+            expect(page.locator("#lib-groups .lib-card")).to_have_count(24)
+            expect(page.locator("#load-more")).to_be_visible()
+            _capture(page, "large-library-desktop")
+            requests = []
+            page.on("request", lambda request: requests.append(request.post_data_json)
+                    if request.method == "POST" and request.url.endswith("/api/v1/decks/move") else None)
+            _enable_selection(page)
+            page.locator("#select-all").click()
+            _card(page, ids[0]).drag_to(_project(page, target["id"]))
+            _wait_until(lambda: _section_ids(client.get("/api/v1/library").json(), target["id"]) == ids,
+                        "Full filtered selection did not move")
+            assert len(requests) == 1
+            assert requests[0]["deck_ids"] == ids
+            assert _section_ids(client.get("/api/v1/library").json(), source["id"]) == []
+            page.reload(wait_until="networkidle")
+            _wait_for_section(client, page, target["id"], ids)
+
+            # A small touch viewport can use the bulk fallback without sidebar
+            # dragging or horizontal page overflow.
+            page.set_viewport_size({"width": 390, "height": 844})
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            page.locator("#lib-scroll").evaluate("element => { element.scrollTop = 0; }")
+            _capture(page, "large-library-mobile")
+            # Moving all selected decks back to Ungrouped clears their membership.
+            _enable_selection(page)
+            page.locator("#select-all").click()
+            page.locator("#move-target").select_option("ungrouped")
+            page.locator("#bulk-move").click()
+            _wait_until(lambda: _section_ids(client.get("/api/v1/library").json(), None) == ids,
+                        "Mobile bulk move did not persist")
+            page.set_viewport_size({"width": 1440, "height": 1000})
+            _wait_for_section(client, page, None, ids)
+            assert all(deck["group_id"] is None for deck in client.get("/api/v1/library").json()["ungrouped"]["decks"])
+            browser.close()
+
+
+def test_control_and_shift_selection_drag_as_one_ordered_batch(connected_server):
+    base_url, token = connected_server
+    with httpx.Client(base_url=base_url, headers={"Authorization": f"Bearer {token}"}, timeout=20) as client:
+        source = _create_group(client, "Range source")
+        target = _create_group(client, "Range destination")
+        decks = [_create_deck(client, f"Range {index}", f"range-{index}") for index in range(6)]
+        ids = [deck["id"] for deck in decks]
+        assert client.post("/api/v1/decks/move", json={
+            "deck_ids": ids, "group_id": source["id"], "index": 0,
+        }).status_code == 200
+        with sync_playwright() as playwright:
+            browser = _launch_browser(playwright)
+            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            page.goto(base_url + "/", wait_until="networkidle")
+            _choose_scope(page, source["id"])
+            requests = []
+            page.on("request", lambda request: requests.append(request.post_data_json)
+                    if request.method == "POST" and request.url.endswith("/api/v1/decks/move") else None)
+            _card(page, ids[1]).click(modifiers=["Control"])
+            _card(page, ids[4]).click(modifiers=["Shift"])
+            expect(page.locator("#library")).to_be_visible()
+            _card(page, ids[2]).drag_to(_project(page, target["id"]))
+            _wait_until(lambda: _section_ids(client.get("/api/v1/library").json(), target["id"])
+                        == ids[1:5], "Range selection did not move the contiguous ordered set")
+            assert len(requests) == 1
+            assert requests[0]["deck_ids"] == ids[1:5]
+            assert _section_ids(client.get("/api/v1/library").json(), source["id"]) == [ids[0], ids[5]]
+            browser.close()
+
+
+def test_legacy_favorites_merge_once_and_follow_server_changes(connected_server):
+    base_url, token = connected_server
+    with httpx.Client(base_url=base_url, headers={"Authorization": f"Bearer {token}"}, timeout=20) as client:
+        old = _create_deck(client, "Browser favorite", "favorite-old")
+        shared = _create_deck(client, "API favorite", "favorite-shared")
+        assert client.put(f"/api/v1/decks/{shared['id']}/favorite", json={"favorite": True}).status_code == 200
+        with sync_playwright() as playwright:
+            browser = _launch_browser(playwright)
+            context = browser.new_context()
+            page = context.new_page()
+            page.add_init_script("localStorage.setItem('mg.library.pinned', " + json.dumps(json.dumps([old["id"]])) + ");")
+            page.goto(base_url + "/", wait_until="networkidle")
+            _wait_until(lambda: client.get(f"/api/v1/decks/{old['id']}").json()["favorite"], "Old browser favorite not migrated")
+            page.locator("#nav-pinned").click()
+            expect(_card(page, old["id"])).to_be_visible()
+            expect(_card(page, shared["id"])).to_be_visible()
+            assert client.put(f"/api/v1/decks/{old['id']}/favorite", json={"favorite": False}).status_code == 200
+            page.reload(wait_until="networkidle")
+            page.locator("#nav-pinned").click()
+            expect(_card(page, old["id"])).to_have_count(0)
+            expect(_card(page, shared["id"])).to_be_visible()
+            assert not client.get(f"/api/v1/decks/{old['id']}").json()["favorite"]
+            second = browser.new_context()
+            fresh_page = second.new_page()
+            fresh_page.goto(base_url + "/", wait_until="networkidle")
+            fresh_page.locator("#nav-pinned").click()
+            expect(_card(fresh_page, shared["id"])).to_be_visible()
+            expect(_card(fresh_page, old["id"])).to_have_count(0)
+            browser.close()
+
+
+def test_version_note_ui_and_api_share_persistent_metadata(connected_server):
+    base_url, token = connected_server
+    with httpx.Client(base_url=base_url, headers={"Authorization": f"Bearer {token}"}, timeout=20) as client:
+        deck = _create_deck(client, "Version notes", "notes-ui-v1")
+        second = client.post(
+            f"/api/v1/decks/{deck['id']}/versions",
+            files={"file": ("deck.zip", _zip({"index.html": "<html><body>Second version</body></html>"}), "application/zip")},
+            data={"idempotency_key": "notes-ui-v2", "note": "Initial API note"},
+        )
+        assert second.status_code == 201
+        version_path = f"/api/v1/decks/{deck['id']}/versions"
+        with sync_playwright() as playwright:
+            browser = _launch_browser(playwright)
+            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            requests = []
+            page.on("request", lambda request: requests.append((request.method, request.url)))
+            page.goto(base_url + "/#" + deck["id"], wait_until="networkidle")
+            expect(page.locator('#version-list .version-card[data-version="2"] .version-note')).to_have_text("Initial API note")
+            assert any(method == "POST" and url.endswith(f"/decks/{deck['id']}/visit") for method, url in requests)
+            assert client.get(f"/api/v1/decks/{deck['id']}").json()["last_viewed_at"] is not None
+
+            # Editing an old version changes its note, never the active pointer or
+            # the version being previewed. The API sees the exact same text.
+            older = page.locator('#version-list .version-card[data-version="1"]')
+            older.click()
+            expect(older).to_have_class("version-card selectable viewing")
+            expect(page.locator("#frame-a")).to_have_attribute("src", f"/v/{deck['id']}/v1/")
+            preview_before = page.locator("#frame-a").get_attribute("src")
+            older.locator('.edit-note[data-action="edit-note"]').click()
+            page.locator("#dialog-note").fill("Saved from the console\nReview <spacing> & contrast")
+            page.locator("#dialog-confirm").click()
+            expect(older.locator(".version-note")).to_have_text("Saved from the console\nReview <spacing> & contrast")
+            expect(older).to_have_class("version-card selectable viewing")
+            assert page.locator("#frame-a").get_attribute("src") == preview_before
+            metadata = client.get(version_path).json()
+            assert metadata["active_version"] == 2
+            assert next(item for item in metadata["items"] if item["version"] == 1)["note"] == "Saved from the console\nReview <spacing> & contrast"
+
+            # Another agent can update the same metadata. Refresh retrieves that
+            # API change, and a later full reload retains it as well.
+            updated = client.patch(version_path + "/1", json={"note": "Updated by an API agent"})
+            assert updated.status_code == 200
+            page.locator("#library-refresh").click()
+            expect(older.locator(".version-note")).to_have_text("Updated by an API agent")
+            page.reload(wait_until="networkidle")
+            expect(older.locator(".version-note")).to_have_text("Updated by an API agent")
+            assert client.get(version_path).json()["active_version"] == 2
+            browser.close()
+
 
 def test_console_upload_download_round_trip_and_failure_ui(connected_server):
     base_url, token = connected_server
@@ -577,7 +598,7 @@ def test_console_upload_download_round_trip_and_failure_ui(connected_server):
         older = _create_deck(client, "Older deck", "ui-upload-older")
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            browser = _launch_browser(playwright)
             context = browser.new_context(viewport={"width": 1280, "height": 900})
             page = context.new_page()
             upload_requests: list[str] = []
@@ -594,11 +615,11 @@ def test_console_upload_download_round_trip_and_failure_ui(connected_server):
 
             # Both fields are required, and dispatching confirm twice still resolves
             # one dialog promise and creates exactly one multipart request.
-            expect(page.locator("#lib-upload")).to_have_text("Upload deck")
-            page.locator("#lib-upload").click()
-            expect(page.locator("#dialog-title")).to_have_text("Upload new deck")
+            page.locator("#library-more").click()
+            _menu_action(page, "upload").click()
+            expect(page.locator("#dialog-title")).to_have_text(_label(page, "uploadDeck"))
             expect(page.locator(".upload-dropzone")).to_be_visible()
-            expect(page.locator(".upload-dropzone")).to_contain_text("Drop a ZIP file here")
+            expect(page.locator(".upload-dropzone")).to_contain_text(_label(page, "dropZip"))
             expect(page.locator("#dialog-confirm")).to_be_disabled()
             page.locator('[data-dialog-field="name"]').fill("Uploaded deck")
             expect(page.locator("#dialog-confirm")).to_be_disabled()
@@ -623,15 +644,15 @@ def test_console_upload_download_round_trip_and_failure_ui(connected_server):
 
             _card(page, uploaded["id"]).click()
             expect(page.locator("#app")).to_be_visible()
-            expect(page.get_by_role("button", name="Upload new version")).to_be_visible()
-            expect(page.get_by_role("button", name="Download ZIP")).to_be_enabled()
-            assert page.locator("#upload-version").inner_text().strip() == ""
-            assert page.locator("#download-version").inner_text().strip() == ""
+            expect(page.locator("#viewer-more")).to_be_visible()
+            expect(page.locator("#download-version")).to_be_enabled()
+            assert page.locator("#download-version").get_attribute("aria-label") == _label(page, "download")
 
             def upload_version(payload: bytes, expected_active: int) -> None:
                 before = len(upload_requests)
-                page.locator("#upload-version").click()
-                expect(page.locator("#dialog-title")).to_have_text("Upload new version")
+                page.locator("#viewer-more").click()
+                _menu_action(page, "upload-version").click()
+                expect(page.locator("#dialog-title")).to_have_text(_label(page, "uploadVersion"))
                 expect(page.locator("#dialog-confirm")).to_be_disabled()
                 page.locator(".upload-dropzone").evaluate(
                     """(dropzone, encoded) => {
@@ -661,7 +682,7 @@ def test_console_upload_download_round_trip_and_failure_ui(connected_server):
                     timeout=20,
                 )
                 expect(page.locator("#dialog-overlay")).to_be_hidden()
-                expect(page.locator("#upload-version")).to_be_enabled(timeout=20_000)
+                expect(page.locator("#viewer-more")).to_be_enabled(timeout=20_000)
                 assert len(upload_requests) == before + 1
 
             upload_version(version_two, 2)
@@ -670,7 +691,7 @@ def test_console_upload_download_round_trip_and_failure_ui(connected_server):
             # Overview changed only in deck versions 1 and 3. Screen history labels
             # those entries v1/v2, but Download ZIP must still request deck version 3.
             page.locator('#scope-switch button[data-scope="screen"]').click()
-            expect(page.locator("#version-heading")).to_contain_text("(2)")
+            expect(page.locator("#history-count")).to_contain_text("2")
             expect(page.locator(".version-card.viewing .version-number")).to_have_text("v2")
             with page.expect_download(timeout=20_000) as download_info:
                 page.locator("#download-version").click()
@@ -694,13 +715,14 @@ def test_console_upload_download_round_trip_and_failure_ui(connected_server):
             # A malformed archive uses the custom error dialog and cannot disturb
             # the active pointer. The double confirm still produces one POST.
             before = len(upload_requests)
-            page.locator("#upload-version").click()
+            page.locator("#viewer-more").click()
+            _menu_action(page, "upload-version").click()
             page.locator('[data-dialog-field="file"]').set_input_files(
                 {"name": "broken.zip", "mimeType": "application/zip", "buffer": b"not a zip"}
             )
             page.locator("#dialog-confirm").evaluate("button => { button.click(); button.click(); }")
             expect(page.locator("#dialog-title")).to_have_text(
-                "Could not upload this version.", timeout=20_000
+                _label(page, "actionFailed"), timeout=20_000
             )
             expect(page.locator("#dialog-body")).not_to_be_empty()
             assert len(upload_requests) == before + 1

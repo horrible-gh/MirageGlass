@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from html.parser import HTMLParser
+
 from conftest import make_zip
 
 
@@ -26,10 +28,27 @@ def test_shell_and_dynamic_api_are_not_cached(app_client):
     shell = app_client.get("/")
     assert shell.status_code == 200
     assert shell.headers["cache-control"] == "no-store"
-    # The existing bookmark format remains hash-based, not query-versioned.
-    assert "location.hash.slice(1)" in shell.text
-    assert "function versionedThumbUrl(deck)" in shell.text
-    assert "if (version != null) return versionUrl(version)" in shell.text
+    # Split console assets must be deployed with the shell and refreshed with it.
+    class ConsoleAssets(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.paths = []
+
+        def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            path = attributes.get("src") if tag == "script" else attributes.get("href") if tag == "link" else None
+            if path and path.startswith("/static/"):
+                self.paths.append(path)
+
+    assets = ConsoleAssets()
+    assets.feed(shell.text)
+    assert assets.paths, "The console must reference its deployed static assets."
+    for path in assets.paths:
+        asset = app_client.get(path)
+        assert asset.status_code == 200, path
+        assert asset.headers["cache-control"] == "no-store", path
+        assert asset.content, path
+        assert "text/html" not in asset.headers.get("content-type", ""), path
 
     for path in ("/api/v1/decks", "/api/v1/library", "/api/v1/help"):
         response = app_client.get(path)
@@ -81,7 +100,7 @@ def test_active_viewer_reloads_and_versioned_assets_are_immutable(app_client, au
             data={"idempotency_key": "tc-cache-v2-20261120"},
         )
         assert update.status_code == 201, update.text
-        assert update.json()["active_version"] == 2
+        assert update.json()["version"] == 2
 
         # The stable share URL tracks the active version; the old path does not.
         current = app_client.get(active)

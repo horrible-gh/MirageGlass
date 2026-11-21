@@ -21,7 +21,7 @@ window.MG_STRINGS = {
   "copyLink": "링크 복사", "copied": "링크를 복사했습니다.", "copyManually": "아래 링크를 복사하세요.", "download": "ZIP 다운로드", "openNewTab": "새 탭에서 열기",
   "viewer": "뷰어", "active": "활성", "latest": "최신", "activeVersion": "활성 v{version}", "viewingVersion": "미리보기 v{version}", "history": "버전 내역", "historyUnavailable": "버전 내역을 불러오지 못했습니다.", "noVersions": "버전 내역이 없습니다.",
   "single": "미리보기", "compare": "버전 비교", "versionA": "버전 A", "versionB": "버전 B", "swap": "비교 버전 바꾸기", "scopeDeck": "전체 시안", "scopeScreen": "선택 화면", "versionScope": "버전 범위",
-  "screens": "화면", "groupDecks": "같은 프로젝트", "showDecks": "시안 목록 보기", "hideDecks": "시안 목록 숨기기", "setActive": "이 버전을 활성화", "activeChanged": "활성 버전을 변경했습니다.",
+  "screens": "화면", "groupDecks": "같은 프로젝트", "showDecks": "같은 프로젝트 펼치기", "hideDecks": "같은 프로젝트 접기", "showProjects": "전체 프로젝트 펼치기", "hideProjects": "전체 프로젝트 접기", "setActive": "이 버전을 활성화", "activeChanged": "활성 버전을 변경했습니다.",
   "editNote": "메모 편집", "addNote": "메모 추가", "versionNote": "버전 메모", "notePlaceholder": "변경 내용을 적어 두세요.", "noteSaved": "메모를 저장했습니다.", "missingScreen": "이 버전에 선택한 화면이 없습니다.",
   "zoomIn": "확대", "zoomOut": "축소", "zoomReset": "원래 크기", "fullScreen": "전체 화면", "exitFullScreen": "전체 화면 종료", "libraryZoom": "라이브러리 크기", "viewerZoom": "미리보기 크기", "showHistory": "버전 내역 보기", "hideHistory": "버전 내역 숨기기",
   "upload": "ZIP 등록", "uploadDeck": "시안 등록", "uploadVersion": "새 버전 등록", "uploading": "등록 중…", "dropZip": "ZIP 파일을 놓으세요", "chooseFile": "또는 클릭하여 파일 선택", "zipOnly": "ZIP 파일", "uploaded": "시안을 등록했습니다.",

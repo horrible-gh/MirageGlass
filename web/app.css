@@ -14,10 +14,11 @@ button svg,[data-icon] svg {width:16px;height:16px;display:block;flex:none}
 [hidden] {display:none!important}
 .shell {height:100dvh;display:flex;overflow:hidden}
 .sidebar {width:236px;flex:none;display:flex;flex-direction:column;background:var(--nav);color:#e8edf5;padding:28px 15px 17px;z-index:20;min-height:0}
-.brand {display:flex;align-items:center;gap:12px;padding:0 11px 33px;color:inherit;text-decoration:none;flex:none}
+.sidebar-heading {display:flex;align-items:center;gap:4px;margin-bottom:33px;flex:none;min-width:0}
+.brand {display:flex;align-items:center;gap:7px;padding:0 0 0 4px;color:inherit;text-decoration:none;flex:1;min-width:0}
 .brand strong {font-size:17px;letter-spacing:-.6px}
 .brand small {display:block;font-size:9px;letter-spacing:1.7px;color:#8191a6;font-weight:750;margin-top:3px}
-.brand-mark {width:34px;height:34px;border:1px solid #62708a;border-radius:9px;position:relative;background:#28364a;display:grid;place-items:center}
+.brand-mark {width:34px;height:34px;flex:none;border:1px solid #62708a;border-radius:9px;position:relative;background:#28364a;display:grid;place-items:center}
 .brand-mark::before,.brand-mark::after {content:"";position:absolute;width:13px;height:13px;border:1.7px solid #c4daff;border-radius:3px;transform:rotate(-22deg)}
 .brand-mark::after {transform:rotate(22deg);border-color:#7899fc}
 .side-label {font-size:10px;letter-spacing:1.2px;color:#8c9cb4;font-weight:750;margin:0 14px 11px;flex:none}
@@ -65,6 +66,10 @@ button svg,[data-icon] svg {width:16px;height:16px;display:block;flex:none}
 .button.subtle:hover {background:#eef2f7}
 .button.icon-only {width:35px;padding:0;flex:none}
 .button.destructive {background:#b53540;color:white;border-color:#b53540}
+.panel-close {display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;flex:none;border-radius:6px;background:transparent;color:#7a8ba3}
+.panel-close:hover {background:#e9eef6;color:#334d70}
+.sidebar .panel-close {color:#a3b3ca}
+.sidebar .panel-close:hover {background:#2a3b54;color:white}
 .segmented {display:flex;background:#eaf0f5;padding:3px;border-radius:9px;gap:2px;flex:none}
 .segmented button {height:28px;min-width:32px;padding:0 9px;display:flex;align-items:center;justify-content:center;color:#78869a;border-radius:6px;background:transparent;font-size:12px;white-space:nowrap}
 .segmented button[aria-pressed="true"] {background:white;color:#415772;box-shadow:0 1px 4px #2a3e5814}
@@ -147,7 +152,8 @@ button svg,[data-icon] svg {width:16px;height:16px;display:block;flex:none}
 .viewer-workspace {flex:1;min-height:0;display:flex;overflow:hidden}
 #rail {width:206px;flex:none;background:#fbfcfe;border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
 #app.rail-hidden #rail {display:none}
-.rail-heading {font-size:10px;font-weight:750;color:#8b9aaf;padding:20px 20px 12px;letter-spacing:.5px}
+.rail-heading {display:flex;align-items:center;gap:4px;font-size:10px;font-weight:750;color:#8b9aaf;padding:12px 11px 8px 20px;letter-spacing:.5px;flex:none}
+.rail-heading > span {flex:1;min-width:0}
 #deck-list {flex:1;min-height:0;overflow:auto;padding:0 11px 22px}
 .deck-item {display:flex;gap:9px;align-items:center;padding:9px 8px;margin:2px 0;border:1px solid transparent;border-radius:8px;cursor:pointer;min-width:0}
 .deck-item:hover {background:#f0f4fa}
@@ -181,8 +187,8 @@ button svg,[data-icon] svg {width:16px;height:16px;display:block;flex:none}
 iframe {flex:1;width:100%;min-height:100%;border:0;background:white;display:block}
 .frame-message {position:absolute;inset:0;display:flex;align-items:center;justify-content:center;margin:0;padding:25px;color:#8695ab;text-align:center;background:white}
 #version-section {width:260px;flex:none;border-left:1px solid var(--line);background:white;display:flex;flex-direction:column;min-height:0}
-.history-head {display:flex;justify-content:space-between;align-items:center;padding:21px 19px 18px;border-bottom:1px solid #edf0f4;flex:none}
-.history-head strong {font-size:13px}
+.history-head {display:flex;align-items:center;gap:8px;padding:13px 12px 13px 19px;border-bottom:1px solid #edf0f4;flex:none}
+.history-head strong {font-size:13px;flex:1;min-width:0}
 #history-count {font-size:10px;color:#9aa7ba}
 #scope-switch {margin:12px 16px 0;justify-content:center;flex:none}
 #scope-switch button {flex:1;font-size:11px}
@@ -259,6 +265,7 @@ iframe {flex:1;width:100%;min-height:100%;border:0;background:white;display:bloc
   .sidebar {position:fixed;left:0;top:0;bottom:0;width:240px;transform:translateX(-100%);transition:transform .2s;z-index:30}
   .shell.menu-open .sidebar {transform:translateX(0)}
   #mobile-menu {display:inline-flex}
+  #sidebar-toggle {display:none}
   #mobile-shade:not([hidden]) {display:block;position:fixed;inset:0;border:0;background:#0d182680;z-index:25}
   .topbar {height:59px;min-height:59px;padding:0 14px}
   #breadcrumbs {max-width:28%}

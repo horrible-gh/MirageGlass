@@ -15,7 +15,7 @@ def test_project_sidebar_scans_vertically_without_horizontal_overflow():
         "MirageGlass",
         "ToolHub",
         "FlowGate v0.2",
-        "긴 프로젝트 이름을 가진 여러 화면 모음 " * 5,
+        "An extremely long project name with multiple screen versions " * 5,
     ]
     rows = "".join(
         '<div class="project-item">'
@@ -32,9 +32,9 @@ def test_project_sidebar_scans_vertically_without_horizontal_overflow():
         '<!doctype html><html><head><meta charset="utf-8"><style>'
         + css
         + '</style></head><body><div class="shell"><aside class="sidebar">'
-        + '<div class="side-heading"><span class="side-label">프로젝트</span></div>'
+        + '<div class="side-heading"><span class="side-label">Projects</span></div>'
         + '<div id="project-nav">' + rows + '</div>'
-        + '<div class="sidebar-subsection"><button class="side-link">미분류</button></div>'
+        + '<div class="sidebar-subsection"><button class="side-link">Ungrouped</button></div>'
         + '<div class="sidebar-spacer"></div></aside><main class="main"></main></div>'
         + '</body></html>'
     )

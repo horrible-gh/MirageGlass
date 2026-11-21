@@ -136,10 +136,12 @@ with open("deck.zip", "rb") as source:
         })
 
 versions = call("GET", f"/api/v1/decks/{deck_id}/versions")
-call("PATCH", f"/api/v1/decks/{deck_id}/versions/2", json={
+new_version = updated["version"]
+call("PATCH", f"/api/v1/decks/{deck_id}/versions/{new_version}", json={
     "note": "Adjusted spacing; reviewed at desktop and mobile widths.",
 })
-call("POST", f"/api/v1/decks/{deck_id}/versions/1/activate")
+earliest_ready = next(item["version"] for item in versions["items"] if item["status"] == "ready")
+call("POST", f"/api/v1/decks/{deck_id}/versions/{earliest_ready}/activate")
 ```
 
 Version notes are editable plain text of up to 4000 characters. Editing a note does not rewrite source

@@ -33,6 +33,7 @@
       <label class="search"><span data-icon="search"></span><input id="lib-search" type="search" data-i18n-label="search" data-i18n-placeholder="search"><kbd>⌘ K</kbd></label>
       <button id="library-refresh" class="button icon-only subtle" data-i18n-label="refresh" data-icon="refresh"></button>
       <button id="library-more" class="button icon-only subtle" data-i18n-label="moreActions" aria-haspopup="menu">⋮</button>
+      <div id="lib-zoom-controls" class="zoom-controls" data-i18n-label="libraryZoom"><button id="lib-zoom-out" data-i18n-label="zoomOut">−</button><button id="lib-zoom-reset" data-i18n-label="zoomReset"><span id="lib-zoom-level">100%</span></button><button id="lib-zoom-in" data-i18n-label="zoomIn">+</button></div>
     </header>
     <section id="library" hidden>
       <div id="lib-scroll">
@@ -41,7 +42,6 @@
           <div class="heading-row"><div><h1><span id="library-title"></span><span id="library-count" class="counter"></span></h1><p id="library-desc" class="heading-desc"></p></div></div>
           <div class="library-toolbar">
             <span id="toolbar-label"></span><div class="toolbar-spacer"></div>
-            <div id="lib-zoom-controls" class="zoom-controls" data-i18n-label="libraryZoom"><button id="lib-zoom-out" data-i18n-label="zoomOut">−</button><button id="lib-zoom-reset" data-i18n-label="zoomReset"><span id="lib-zoom-level">100%</span></button><button id="lib-zoom-in" data-i18n-label="zoomIn">+</button></div>
             <select id="lib-sort" class="plain-select" data-i18n-label="sort"><option value="manual" data-i18n="manual"></option><option value="updated" data-i18n="updated"></option><option value="name" data-i18n="nameOrder"></option><option value="versions" data-i18n="versionsOrder"></option></select>
             <div class="segmented"><button id="layout-grid" aria-pressed="true" data-i18n-label="grid" data-icon="grid"></button><button id="layout-list" aria-pressed="false" data-i18n-label="list" data-icon="list"></button></div>
           </div>

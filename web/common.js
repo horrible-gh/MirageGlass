@@ -161,7 +161,7 @@ function openMenu(anchor, items) {
     if (item.separator) { const line = document.createElement('div'); line.className = 'lib-menu-sep'; line.setAttribute('role','separator'); menu.append(line); return; }
     const button = document.createElement('button'); button.type = 'button'; button.className = 'lib-menu-item' + (item.destructive ? ' destructive' : '');
     button.setAttribute('role','menuitem'); button.textContent = item.label; button.disabled = Boolean(item.disabled); if (item.action) button.dataset.action = item.action;
-    button.onclick = () => { closeMenu(); Promise.resolve(item.onClick()).catch(error => showFailureAlert(error)); };
+    button.onclick = () => { closeMenu(true); Promise.resolve(item.onClick()).catch(error => showFailureAlert(error)); };
     menu.append(button);
   });
   document.body.append(menu);

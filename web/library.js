@@ -233,6 +233,16 @@ function openDeckMenu(anchor,deck) {
     {separator:true},{label:t('delete'),action:'delete',destructive:true,onClick:() => deleteDeck(deck)}
   ]);
 }
+function focusLibraryItem(kind,id,control = '.lib-kebab') {
+  const selector = kind === 'group' ? '#project-nav .project-item[data-group-id="' + CSS.escape(id) + '"] .lib-group-kebab'
+    : '#lib-groups .lib-card[data-deck-id="' + CSS.escape(id) + '"] ' + control;
+  const target = document.querySelector(selector);
+  if (target) target.focus({preventScroll:true});
+}
+function focusScope(groupId) {
+  const target = groupId === null ? $('nav-ungrouped') : document.querySelector('#project-nav .project-item[data-group-id="' + CSS.escape(groupId) + '"] .side-link');
+  target?.focus({preventScroll:true});
+}
 async function togglePin(id) {
   const deck = findLibraryDeck(id); if (!deck || pendingFavorites.has(id)) return;
   const favorite = !deck.favorite; pendingFavorites.add(id); renderSelection();
@@ -241,7 +251,11 @@ async function togglePin(id) {
     await apiRequest('/api/v1/decks/' + encodeURIComponent(id) + '/favorite',jsonRequest('PUT',{favorite}));
     await loadLibrary(); announceLibrary(t(favorite ? 'favoriteSaved' : 'favoriteRemoved'));
   } catch (error) { await loadLibrary(); await showFailureAlert(error); }
-  finally { pendingFavorites.delete(id); if (libraryData) renderLibrary(); }
+  finally {
+    pendingFavorites.delete(id);
+    if (libraryData) { renderLibrary(); focusLibraryItem('deck',id,'.lib-pin'); }
+    if (!document.querySelector('#lib-groups .lib-card[data-deck-id="' + CSS.escape(id) + '"]')) $('nav-pinned').focus({preventScroll:true});
+  }
 }
 function setNav(nav) {
   libraryState.nav = nav; libraryState.visibleCount = PAGE_SIZE; $('lib-search').value = '';
@@ -281,7 +295,7 @@ function dropDecks(event,groupId,targetId,position) {
   const index = targetId === null ? (position === 'start' ? 0 : target.length) : targetIndex < 0 ? target.length : targetIndex + (position === 'after' ? 1 : 0);
   finishLibraryDrag();
   if (self || isBulkMoveNoop(ids,groupId,index)) return;
-  if (targetId && currentGroupId() === groupId) libraryState.sort = 'manual';
+  if (targetId) libraryState.sort = 'manual';
   void dispatchOrganizationMove({kind:'decks',ids,groupId,index});
 }
 function dropGroup(event,targetId,position) {
@@ -303,6 +317,9 @@ async function dispatchOrganizationMove(command) {
     if (command.kind !== 'group') ids.forEach(id => libraryState.selected.delete(id));
     await loadLibrary();
     announceLibrary(command.kind === 'group' ? t('reordered') : t('moved',{count:ids.length}));
+    if (command.kind === 'group') focusLibraryItem('group',command.id);
+    else if (ids.length === 1 && document.querySelector('#lib-groups .lib-card[data-deck-id="' + CSS.escape(ids[0]) + '"]')) focusLibraryItem('deck',ids[0]);
+    else focusScope(command.groupId);
     return true;
   } catch (error) {
     await loadLibrary(); await showFailureAlert(error,t('moveFailed')); return false;
@@ -339,27 +356,27 @@ async function chooseGroupReorder(group) {
 }
 async function createGroup() {
   const name = await promptName({title:t('newGroup'),label:t('groupName')}); if (name === null) return;
-  try { await apiRequest('/api/v1/groups',jsonRequest('POST',{name})); await loadLibrary(); }
+  try { const group = await apiRequest('/api/v1/groups',jsonRequest('POST',{name})); await loadLibrary(); focusScope(group.id); }
   catch (error) { await loadLibrary(); await showFailureAlert(error); }
 }
 async function renameGroup(group) {
   const name = await promptName({title:t('renameGroup'),label:t('groupName'),initialValue:group.name}); if (name === null) return;
-  try { await apiRequest('/api/v1/groups/' + encodeURIComponent(group.id),jsonRequest('PATCH',{name})); await loadLibrary(); }
+  try { await apiRequest('/api/v1/groups/' + encodeURIComponent(group.id),jsonRequest('PATCH',{name})); await loadLibrary(); focusLibraryItem('group',group.id); }
   catch (error) { await loadLibrary(); await showFailureAlert(error); }
 }
 async function deleteGroup(group) {
   if (!await confirmDestructive({title:t('deleteGroup'),bodyHtml:'<p><strong>' + esc(group.name) + '</strong></p><p>' + esc(t('deleteGroupDescription')) + '</p>',confirmText:t('deleteGroup')})) return;
-  try { await apiRequest('/api/v1/groups/' + encodeURIComponent(group.id),{method:'DELETE'}); await loadLibrary(); }
+  try { await apiRequest('/api/v1/groups/' + encodeURIComponent(group.id),{method:'DELETE'}); await loadLibrary(); focusScope(null); }
   catch (error) { await loadLibrary(); await showFailureAlert(error); }
 }
 async function renameDeck(deck) {
   const name = await promptName({title:t('renameDeck'),label:t('deckName'),initialValue:deck.name}); if (name === null) return;
-  try { await apiRequest('/api/v1/decks/' + encodeURIComponent(deck.id),jsonRequest('PATCH',{name})); await loadLibrary(); }
+  try { await apiRequest('/api/v1/decks/' + encodeURIComponent(deck.id),jsonRequest('PATCH',{name})); await loadLibrary(); focusLibraryItem('deck',deck.id); }
   catch (error) { await loadLibrary(); await showFailureAlert(error); }
 }
 async function deleteDeck(deck) {
   if (!await confirmDestructive({title:t('deleteDeck'),bodyHtml:'<p><strong>' + esc(deck.name) + '</strong></p><p>' + esc(t('deleteDeckDescription')) + '</p>',confirmText:t('deleteDeck')})) return;
-  try { await apiRequest('/api/v1/decks/' + encodeURIComponent(deck.id),{method:'DELETE'}); await loadLibrary(); }
+  try { await apiRequest('/api/v1/decks/' + encodeURIComponent(deck.id),{method:'DELETE'}); await loadLibrary(); (document.querySelector('#lib-groups .lib-card') || $('nav-all')).focus({preventScroll:true}); }
   catch (error) { await loadLibrary(); await showFailureAlert(error); }
 }
 
@@ -402,11 +419,12 @@ document.addEventListener('keydown',event => {
 let navGeneration = 0;
 function showLibraryScreen() {
   $('app').hidden = true; $('library').hidden = false; railScopeIds = null;
+  $('lib-zoom-controls').hidden = false;
   ++viewerLoadGeneration; ++versionLoadGeneration; ++frameGeneration;
   currentId = null; $('frame-a').removeAttribute('src'); $('frame-b').removeAttribute('src');
   void loadLibrary();
 }
-function showViewerScreen() { $('library').hidden = true; $('app').hidden = false; closeMobileMenu(); }
+function showViewerScreen() { $('library').hidden = true; $('app').hidden = false; $('lib-zoom-controls').hidden = true; closeMobileMenu(); }
 async function ensureDecksLoaded() {
   const data = await apiRequest('/api/v1/decks');
   return (data.items || []).map(normalizeDeck);

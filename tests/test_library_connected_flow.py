@@ -514,6 +514,56 @@ def test_legacy_favorites_merge_once_and_follow_server_changes(connected_server)
             browser.close()
 
 
+def test_version_note_ui_and_api_share_persistent_metadata(connected_server):
+    base_url, token = connected_server
+    with httpx.Client(base_url=base_url, headers={"Authorization": f"Bearer {token}"}, timeout=20) as client:
+        deck = _create_deck(client, "Version notes", "notes-ui-v1")
+        second = client.post(
+            f"/api/v1/decks/{deck['id']}/versions",
+            files={"file": ("deck.zip", _zip({"index.html": "<html><body>Second version</body></html>"}), "application/zip")},
+            data={"idempotency_key": "notes-ui-v2", "note": "Initial API note"},
+        )
+        assert second.status_code == 201
+        version_path = f"/api/v1/decks/{deck['id']}/versions"
+        with sync_playwright() as playwright:
+            browser = _launch_browser(playwright)
+            page = browser.new_page(viewport={"width": 1440, "height": 1000})
+            requests = []
+            page.on("request", lambda request: requests.append((request.method, request.url)))
+            page.goto(base_url + "/#" + deck["id"], wait_until="networkidle")
+            expect(page.locator('#version-list .version-card[data-version="2"] .version-note')).to_have_text("Initial API note")
+            assert any(method == "POST" and url.endswith(f"/decks/{deck['id']}/visit") for method, url in requests)
+            assert client.get(f"/api/v1/decks/{deck['id']}").json()["last_viewed_at"] is not None
+
+            # Editing an old version changes its note, never the active pointer or
+            # the version being previewed. The API sees the exact same text.
+            older = page.locator('#version-list .version-card[data-version="1"]')
+            older.click()
+            expect(older).to_have_class("version-card selectable viewing")
+            expect(page.locator("#frame-a")).to_have_attribute("src", f"/v/{deck['id']}/v1/")
+            preview_before = page.locator("#frame-a").get_attribute("src")
+            older.locator('.edit-note[data-action="edit-note"]').click()
+            page.locator("#dialog-note").fill("Saved from the console\nReview <spacing> & contrast")
+            page.locator("#dialog-confirm").click()
+            expect(older.locator(".version-note")).to_have_text("Saved from the console\nReview <spacing> & contrast")
+            expect(older).to_have_class("version-card selectable viewing")
+            assert page.locator("#frame-a").get_attribute("src") == preview_before
+            metadata = client.get(version_path).json()
+            assert metadata["active_version"] == 2
+            assert next(item for item in metadata["items"] if item["version"] == 1)["note"] == "Saved from the console\nReview <spacing> & contrast"
+
+            # Another agent can update the same metadata. Refresh retrieves that
+            # API change, and a later full reload retains it as well.
+            updated = client.patch(version_path + "/1", json={"note": "Updated by an API agent"})
+            assert updated.status_code == 200
+            page.locator("#library-refresh").click()
+            expect(older.locator(".version-note")).to_have_text("Updated by an API agent")
+            page.reload(wait_until="networkidle")
+            expect(older.locator(".version-note")).to_have_text("Updated by an API agent")
+            assert client.get(version_path).json()["active_version"] == 2
+            browser.close()
+
+
 def test_console_upload_download_round_trip_and_failure_ui(connected_server):
     base_url, token = connected_server
     headers = {"Authorization": f"Bearer {token}"}

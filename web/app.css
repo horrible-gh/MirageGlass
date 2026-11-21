@@ -169,6 +169,7 @@ button svg,[data-icon] svg {width:16px;height:16px;display:block;flex:none}
 .zoom-controls button:hover {background:#e2e7ef}
 .zoom-controls [id$="level"] {min-width:40px;text-align:center}
 .zoom-controls svg {width:14px;height:14px}
+#lib-bar #lib-zoom-controls {padding-left:10px;margin-left:2px;border-left:1px solid var(--line)}
 #compare-controls {display:flex;align-items:center;justify-content:center;gap:9px;background:white;border-bottom:1px solid var(--line);min-height:50px;padding:8px 12px;flex:none}
 #compare-controls label {display:flex;align-items:center;gap:8px;font-size:10px;color:#7b8ca3;font-weight:700}
 #compare-controls select {border:1px solid #dce5ed;border-radius:6px;background:white;padding:6px 8px;font-size:11px;color:#40516b;min-width:80px}

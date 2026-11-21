@@ -147,7 +147,7 @@ def _capture(page: Page, name: str) -> None:
     if directory:
         target = Path(directory)
         target.mkdir(parents=True, exist_ok=True)
-        page.screenshot(path=str(target / f"{name}.png"), full_page=True)
+        page.screenshot(path=str(target / f"{name}.png"), full_page=True, animations="disabled")
 
 
 def _enable_selection(page: Page) -> None:
@@ -356,9 +356,14 @@ def test_library_connected_flow_persists_rolls_back_and_preserves_viewer(connect
             # CRUD and favorites still use the same server record as an AI client.
             page.locator("#lib-new-group").click()
             page.locator("#dialog-input").fill("Temporary")
-            page.locator("#dialog-confirm").click()
-            temporary = next(g for g in client.get("/api/v1/library").json()["groups"]
-                             if g["name"] == "Temporary")
+            with page.expect_response(lambda response: response.request.method == "POST"
+                                      and response.url.endswith("/api/v1/groups")) as created_group:
+                page.locator("#dialog-confirm").click()
+            assert created_group.value.status == 201
+            temporary = created_group.value.json()
+            expect(_project(page, temporary["id"])).to_be_visible()
+            assert any(group["id"] == temporary["id"]
+                       for group in client.get("/api/v1/library").json()["groups"])
             _project(page, temporary["id"]).locator(".lib-group-kebab").click()
             _menu_action(page, "delete").click()
             expect(page.locator("#dialog-cancel")).to_be_focused()
@@ -439,6 +444,7 @@ def test_large_group_select_all_moves_hidden_items_in_one_request(connected_serv
             # dragging or horizontal page overflow.
             page.set_viewport_size({"width": 390, "height": 844})
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            page.locator("#lib-scroll").evaluate("element => { element.scrollTop = 0; }")
             _capture(page, "large-library-mobile")
             # Moving all selected decks back to Ungrouped clears their membership.
             _enable_selection(page)

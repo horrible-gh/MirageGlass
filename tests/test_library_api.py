@@ -147,8 +147,14 @@ def test_library_crud_move_delete_and_legacy_compatibility(
     assert isinstance(legacy_before[0]["favorite"], bool)
 
     alpha = _create_group(app_client, auth_headers, "  Duplicate  ")
-    beta = _create_group(app_client, auth_headers, "Duplicate")
-    assert alpha["name"] == beta["name"] == "Duplicate"
+    duplicate = app_client.post(
+        "/api/v1/groups", headers=auth_headers, json={"name": "Duplicate"}
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "duplicate_group_name"
+    beta = _create_group(app_client, auth_headers, "Beta")
+    assert alpha["name"] == "Duplicate"
+    assert alpha["parent_id"] is beta["parent_id"] is None
 
     renamed = app_client.patch(
         f"/api/v1/groups/{alpha['id']}",
@@ -237,7 +243,17 @@ def test_library_crud_move_delete_and_legacy_compatibility(
     ungrouped_before = _section_ids(app_client, None)
     beta_members = _section_ids(app_client, beta["id"])
     deleted = app_client.delete(f"/api/v1/groups/{beta['id']}", headers=auth_headers)
-    assert deleted.status_code == 204
+    assert deleted.status_code == 409
+    assert deleted.json()["detail"]["code"] == "group_not_empty"
+    assert _section_ids(app_client, beta["id"]) == beta_members
+    assert _section_ids(app_client, None) == ungrouped_before
+    assert app_client.post(
+        "/api/v1/decks/move", headers=auth_headers,
+        # An end-clamped index also includes any not-yet-ready siblings, which
+        # are intentionally absent from the public library response.
+        json={"deck_ids": beta_members, "group_id": None, "index": 99999},
+    ).status_code == 200
+    assert app_client.delete(f"/api/v1/groups/{beta['id']}", headers=auth_headers).status_code == 204
     assert _section_ids(app_client, None) == [*ungrouped_before, *beta_members]
     library = app_client.get("/api/v1/library").json()
     assert beta["id"] not in [group["id"] for group in library["groups"]]
@@ -249,7 +265,8 @@ def test_library_crud_move_delete_and_legacy_compatibility(
         headers=auth_headers,
         json={"index": 999},
     ).status_code == 200
-    groups = app_client.get("/api/v1/library").json()["groups"]
+    groups = [group for group in app_client.get("/api/v1/library").json()["groups"]
+              if group["parent_id"] is None]
     assert [group["sort_order"] for group in groups] == list(range(len(groups)))
 
     assert app_client.post(
@@ -309,12 +326,13 @@ def test_transaction_failure_injection_rolls_back_all_organization_changes(
     assert one["id"] not in _section_ids(app_client, target["id"])
 
     def fail_delete(self, name):
-        if name == "group_delete.after_decks":
+        if name == "group_delete.after_delete":
             raise RuntimeError("injected group-delete failure")
 
     monkeypatch.setattr(DeckRepository, "_checkpoint", fail_delete)
     with pytest.raises(RuntimeError, match="group-delete"):
-        repo.delete_group(source["id"])
+        repo.delete_group(target["id"])
+    assert repo.get_group(target["id"]) is not None
     assert repo.get_group(source["id"]) is not None
     assert repo.get(one["id"])["group_id"] == source["id"]
     assert repo.get(two["id"])["group_id"] == source["id"]

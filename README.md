@@ -13,7 +13,7 @@ MirageGlass is a self-hosted viewer and version manager for HTML presentation de
 - A browser dashboard for browsing versions and comparing two versions side by side
 - Optional multi-screen decks (a `screens.json` manifest groups several screens under one deck) with a per-screen or deck-wide version timeline
 - Idempotency keys for safe registration and upload retries
-- A group-scoped library with search, card/list views, range selection, and atomic bulk moves
+- A hierarchical group library with collapsible navigation, search, card/list views, range selection, and atomic bulk moves
 - Server-owned favorites, recent visits, and version notes shared by the console and API clients
 
 ## Quick start
@@ -101,7 +101,16 @@ Each screen needs a unique `key` (used by the API), a display `tag` chosen by wh
 
 ## Organizing the library
 
-The sidebar selects one group at a time. **Ungrouped is a filter for decks whose
+The sidebar selects one group at a time in a collapsible tree. Create a subgroup
+from a group's menu, or choose a parent when creating a group. Group moves use
+a destination selector with a top-level option; dragging groups reorders siblings.
+Projects and versions fit naturally into two or three levels, but the data model
+does not impose a fixed depth. Group paths appear in the library, move selectors,
+and viewer so identically named groups under different parents stay distinct.
+
+A group shows its directly assigned decks by default. **Include subgroups**
+adds decks from all descendants without changing their membership. **Ungrouped
+is a filter for decks whose
 `group_id` is `null`, not a stored group.** It sits directly below the group list.
 Each scope initially shows 24 decks; Load more reveals the next page. Search
 covers the whole library, and selecting all includes matching decks that have
@@ -111,8 +120,16 @@ Drag one deck directly onto a sidebar group, or use Ctrl/Cmd-click and
 Shift-click to select a set and drag it together. The selection toolbar provides
 the same move action without dragging. A move is committed by the server as one
 transaction; an invalid item or failed write cannot leave half the selection in
-the destination. Group deletion keeps every deck and moves its contents to
-Ungrouped.
+the destination. A group can be deleted only when it has no decks and no child
+groups. Move its contents explicitly before deleting it. Moving a group preserves
+its entire subtree, deck membership, and existing viewer links.
+
+New group names must be unique among siblings after trimming whitespace; matching
+is case-sensitive. Different parents may contain groups with the same name.
+Upgrades preserve any duplicate names already stored by older releases, and those
+groups remain reorderable. Renaming or moving them must not introduce another
+sibling-name conflict. The application has favorites and version notes, but no
+workflow-status or tag field; nesting does not add or infer one.
 
 The star beside each deck title controls its favorite state. Favorites and
 recent visits belong to this MirageGlass instance, so API agents and browsers
@@ -136,7 +153,7 @@ enabled first-party console session.
 | --- | --- |
 | Read groups, ordered decks, favorites, and recent visits | `GET /api/v1/library` |
 | Create, rename, or delete a group | `POST /api/v1/groups`, `PATCH /api/v1/groups/{id}`, `DELETE /api/v1/groups/{id}` |
-| Change group order | `POST /api/v1/groups/{id}/move` |
+| Move a group to another parent or change sibling order | `POST /api/v1/groups/{id}/move` |
 | Rename or delete a deck | `PATCH /api/v1/decks/{id}`, `DELETE /api/v1/decks/{id}` |
 | Move or reorder one deck | `POST /api/v1/decks/{id}/move` |
 | Move or reorder multiple decks atomically | `POST /api/v1/decks/move` |
@@ -148,7 +165,7 @@ enabled first-party console session.
 | Register, upload a version, or activate an earlier version | Existing `POST /api/v1/decks`, `POST /api/v1/decks/{id}/versions`, `POST /api/v1/decks/{id}/versions/{version}/activate` |
 | Inspect, download, or compare source versions | Existing screen, file-manifest, download, and version-specific viewer endpoints |
 
-Use real IDs from the library response, not display names. Names need not be
+Use real IDs from the library response, not display names. Names are not globally
 unique. A `null` target moves a deck to Ungrouped; never create a group named
 Ungrouped to represent that state. See [the automation guide](docs/automation.md)
 for a complete requests-based organization workflow, ordering semantics, and
@@ -193,6 +210,6 @@ storage/
 - The package and import name is `sqloader`; its upstream repository is `py_sqloader`.
 - Use an isolated virtual environment and install the versions in `requirements.txt`. The older `sqloader` 0.2.15 release has an incompatible `sqloader.init` import.
 - `/v/{id}` and `/v/{id}/v{n}` redirect with `307` to their trailing-slash forms. The trailing slash is required for relative deck assets to resolve correctly.
-- Upgrades apply additive SQLite migrations at startup. Back up `storage/` before upgrading an instance; its existing decks, groups, order, version archives, and active links are retained.
+- Upgrades apply additive SQLite migrations at startup. Back up `storage/` before upgrading an instance; its existing decks, groups, order, version archives, and active links are retained. Migration 006 adds nullable `parent_id`; every existing group stays at the top level, with no automatic regrouping or deletion. See [the upgrade and organization sequence](docs/automation.md#upgrading-and-organizing-existing-decks).
 - The console shell, its `/static/` assets, and API responses use `Cache-Control: no-store`. Immutable `/v/{id}/v{n}/` content keeps its existing long-lived cache policy.
 - On consoles using cp932, cp949, or another non-UTF-8 code page, `curl.exe -F` can corrupt non-ASCII deck names. This is a client encoding issue; automated registration should send UTF-8 multipart fields.

@@ -36,6 +36,7 @@ from .auth import require_management_write
 from .config import database, settings
 from .repository import (
     DeckRepository,
+    OrganizationConflict,
     OrganizationNotFound,
     new_deck_id,
     new_group_id,
@@ -59,6 +60,10 @@ class NamePayload(BaseModel):
     name: str
 
 
+class GroupCreatePayload(NamePayload):
+    parent_id: Optional[StrictStr] = Field(default=None, min_length=1)
+
+
 class DeckMovePayload(BaseModel):
     group_id: Optional[str] = None
     index: StrictInt
@@ -66,6 +71,7 @@ class DeckMovePayload(BaseModel):
 
 class GroupMovePayload(BaseModel):
     index: StrictInt
+    parent_id: Optional[StrictStr] = Field(default=None, min_length=1)
 
 
 class DeckSelectionPayload(BaseModel):
@@ -133,6 +139,13 @@ def _organization_not_found(error: OrganizationNotFound) -> HTTPException:
     return HTTPException(
         status_code=404,
         detail={"code": "not_found", "message": f"{error.entity} not found"},
+    )
+
+
+def _organization_conflict(error: OrganizationConflict) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"code": error.code, "message": str(error)},
     )
 
 
@@ -500,11 +513,16 @@ def record_visit(
 
 @api_router.post("/groups", status_code=201)
 def create_group(
-    payload: NamePayload,
+    payload: GroupCreatePayload,
     _: str = Depends(require_management_write),
     repo: DeckRepository = Depends(get_repo),
 ):
-    return repo.create_group(new_group_id(), _normalize_name(payload.name))
+    try:
+        return repo.create_group(new_group_id(), _normalize_name(payload.name), payload.parent_id)
+    except OrganizationNotFound as error:
+        raise _organization_not_found(error)
+    except OrganizationConflict as error:
+        raise _organization_conflict(error)
 
 
 @api_router.patch("/groups/{group_id}")
@@ -518,6 +536,8 @@ def rename_group(
         return repo.rename_group(group_id, _normalize_name(payload.name))
     except OrganizationNotFound as error:
         raise _organization_not_found(error)
+    except OrganizationConflict as error:
+        raise _organization_conflict(error)
 
 
 @api_router.delete("/groups/{group_id}", status_code=204)
@@ -530,6 +550,8 @@ def delete_group(
         repo.delete_group(group_id)
     except OrganizationNotFound as error:
         raise _organization_not_found(error)
+    except OrganizationConflict as error:
+        raise _organization_conflict(error)
     return None
 
 
@@ -541,9 +563,13 @@ def move_group(
     repo: DeckRepository = Depends(get_repo),
 ):
     try:
+        if "parent_id" in payload.model_fields_set:
+            return repo.move_group(group_id, payload.index, payload.parent_id)
         return repo.move_group(group_id, payload.index)
     except OrganizationNotFound as error:
         raise _organization_not_found(error)
+    except OrganizationConflict as error:
+        raise _organization_conflict(error)
 
 
 @api_router.patch("/decks/{deck_id}")
@@ -803,11 +829,15 @@ def help_document():
             "4) GET /api/v1/decks/{id}/versions to list every version and see which one is active",
             "5) GET /v/{id}/v{n}/ to render a specific ready version without changing the active shared link",
             "6) POST /api/v1/decks/{id}/versions/{n}/activate to roll the active version back to an earlier one",
-            "7) GET /api/v1/library, create or rename groups, then POST /api/v1/decks/move to organize several decks atomically. Use group_id=null to remove group membership.",
+            "7) GET /api/v1/library, create groups with an optional parent_id or move an intact group subtree, then POST /api/v1/decks/move to organize several decks atomically. Use group_id=null to remove deck membership.",
             "8) PUT a favorite value, POST a visit, or PATCH a version note to share those changes between the console and API agents. Notes may also be supplied with the original multipart upload.",
         ],
         "library_model": {
-            "groups": "Real group records with stable IDs and ordered decks. Duplicate display names are allowed; use IDs in writes.",
+            "groups": "A flat array of real group records with stable IDs, parent_id (null at the top level), sibling-local sort_order, and directly owned ordered decks. Follow parent_id to build the tree or a full path; there is no fixed depth limit. Each deck occurs once. Existing group IDs, links and memberships survive the hierarchy migration.",
+            "group_names": "Names are trimmed, 1..120 characters, and compared exactly (case-sensitive). Creating, renaming or moving into an identical sibling name is rejected with 409 duplicate_group_name, including at the top level. The same name under different parents is allowed. Pre-existing duplicate siblings are preserved; they may be reordered or renamed to their unchanged name, but no new conflict can be introduced.",
+            "group_move": "POST /groups/{id}/move accepts {index:integer,parent_id?:string|null}. Omit parent_id to reorder within the current parent; explicit null moves to the top level. The index addresses destination siblings after removing the moving group, clamped to 0..N. Subgroups and deck memberships retain their IDs and links. Self/descendant moves return 409 group_cycle, missing parents return 404, and a failed mutation changes nothing.",
+            "group_delete": "Only an empty group may be deleted. Any direct deck (including processing or failed decks) or child group causes 409 group_not_empty. Move those records first; deletion never ungroups or deletes decks and never deletes children.",
+            "group_scope": "Each group's decks list is direct membership only. The console defaults to that scope and offers an explicit Include subgroups option; API clients can follow parent_id and combine those direct lists without duplicate memberships.",
             "ungrouped": "A separate section for decks with group_id=null, not a group record.",
             "favorite": "A shared server-owned boolean on each deck. PUT sets a value rather than toggling it, making retries safe.",
             "last_viewed_at": "A shared UTC timestamp or null. Only POST .../visit records a visit; ordinary GETs do not change it. Sort descending for recents.",
@@ -868,31 +898,31 @@ def help_document():
                 "method": "GET",
                 "path": "/api/v1/library",
                 "auth": False,
-                "description": "Read ordered groups and a separate ungrouped section. Each deck includes group_id, sort_order, favorite, last_viewed_at, version counts and screen_count. This is the shared state used by the console and API agents.",
+                "description": "Read a flat groups array with parent_id, sibling-local sort_order and directly owned decks, plus a separate ungrouped section. Each deck includes group_id, sort_order, favorite, last_viewed_at, version counts and screen_count. Follow parent_id to build the tree or explicitly include descendants; decks are never copied into ancestor groups.",
             },
             {
                 "method": "POST",
                 "path": "/api/v1/groups",
                 "auth": True,
-                "description": "Create a group at the front of the group order. JSON: {name:string}. Returns the new group with a stable id (201). Names are trimmed, 1..120 characters; duplicate names are allowed.",
+                "description": "Create a group at the front of its sibling order. JSON: {name:string,parent_id?:string|null}; omitted/null parent means top level. Returns the new group with a stable id and parent_id (201). Names are trimmed, 1..120 characters. Exact sibling-name collisions return 409 duplicate_group_name, a missing parent returns 404, and invalid input returns 422.",
             },
             {
                 "method": "PATCH",
                 "path": "/api/v1/groups/{group_id}",
                 "auth": True,
-                "description": "Rename one group. JSON: {name:string}. Identity, members and order stay unchanged. Returns the group (200); 404 missing, 422 invalid name.",
+                "description": "Rename one group. JSON: {name:string}. Identity, parent, members and order stay unchanged. Returns the group (200); 404 missing, 409 duplicate_group_name for a new exact sibling-name conflict, 422 invalid name. An unchanged-name request remains valid for preserved legacy duplicates.",
             },
             {
                 "method": "DELETE",
                 "path": "/api/v1/groups/{group_id}",
                 "auth": True,
-                "description": "Delete only the group and append its ordered decks to ungrouped, atomically. No deck or version is deleted. 204 success, 404 missing.",
+                "description": "Delete an empty group only. A direct deck of any status or a child group blocks deletion with 409 group_not_empty. Move those records first. No deck, membership, child group or version is deleted or moved. 204 success, 404 missing.",
             },
             {
                 "method": "POST",
                 "path": "/api/v1/groups/{group_id}/move",
                 "auth": True,
-                "description": "Move one group in the sidebar order. JSON: {index:integer}. Index addresses the remaining groups, clamped to 0..N. Returns the moved group (200).",
+                "description": "Reorder a group or move its intact subtree. JSON: {index:integer,parent_id?:string|null}. Omitted parent preserves its current parent; explicit null moves to top level. Index addresses destination siblings without the moving group, clamped to 0..N. Returns the moved group (200); 404 missing group/parent, 409 group_cycle for self/descendant moves, 409 duplicate_group_name for an exact sibling-name conflict. Validation and both sibling orders change in one transaction.",
             },
             {
                 "method": "PATCH",
@@ -1033,6 +1063,8 @@ def help_document():
             "?version=n is read only. It works on /download and /files; the only way to change the active version is POST .../versions/{n}/activate.",
             "A zip with a root screens.json registers multiple screens instead of a single index.html; each entry needs key/tag/entry and the entry file must exist in the zip. Without screens.json, a deck behaves exactly as before (one implicit screen).",
             "Ungrouped is not a group ID. Send JSON null to remove group membership; group names are not unique identifiers.",
+            "Groups use parent_id=null at the top level, while ungrouped decks use group_id=null. Omitting parent_id in a group move only reorders current siblings; send null explicitly to move a nested group to the top level.",
+            "Deleting a nonempty group now returns 409 group_not_empty. Move its decks and child groups explicitly before deleting the empty group; deletion never changes deck membership.",
             "Use one bulk move for a selection instead of independent moves: validation and ordering updates commit together. The insertion index is measured after the selected decks have been removed from the target.",
             "Favorites and recency are now shared server metadata. A browser may import its old local pins once, but API writes and later console changes use the same durable values.",
         ],

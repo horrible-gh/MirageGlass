@@ -108,8 +108,8 @@ def test_bulk_move_rolls_back_mid_transaction_failure(app_client, auth_headers, 
     from server.repository import DeckRepository
 
     ids = [_create_deck(app_client, auth_headers, f"{checkpoint}-{i}")["id"] for i in range(3)]
-    source = _create_group(app_client, auth_headers, "Atomic source")["id"]
-    target = _create_group(app_client, auth_headers, "Atomic target")["id"]
+    source = _create_group(app_client, auth_headers, f"Atomic source {checkpoint}")["id"]
+    target = _create_group(app_client, auth_headers, f"Atomic target {checkpoint}")["id"]
     assert _bulk_move(app_client, auth_headers, ids, source).status_code == 200
     before = app_client.get("/api/v1/library").json()
 

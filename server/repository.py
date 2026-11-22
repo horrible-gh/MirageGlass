@@ -19,12 +19,19 @@ QUERY_FILE = "queries"
 
 _ID_ALPHABET = string.ascii_lowercase + string.digits
 _ORGANIZATION_LOCK = threading.RLock()
+_PRESERVE_PARENT = object()
 
 
 class OrganizationNotFound(Exception):
     def __init__(self, entity: str) -> None:
         super().__init__(entity)
         self.entity = entity
+
+
+class OrganizationConflict(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def now_iso() -> str:
@@ -62,9 +69,34 @@ class DeckRepository:
         )
         return [row["id"] for row in rows]
 
-    def _group_ids(self, tx) -> list[str]:
-        rows = tx.fetch_all(self._sql("deck_groups.list_ordered"))
+    def _group_ids(self, tx, parent_id: Optional[str]) -> list[str]:
+        rows = tx.fetch_all(self._sql("deck_groups.list_siblings"), (parent_id,))
         return [row["id"] for row in rows]
+
+    def _ensure_group_name_available(
+        self, tx, name: str, parent_id: Optional[str], group_id: Optional[str] = None
+    ) -> None:
+        if tx.fetch_one(
+            self._sql("deck_groups.find_name_conflict"),
+            (parent_id, name, group_id, group_id),
+        ):
+            raise OrganizationConflict(
+                "duplicate_group_name", "A group with this name already exists under this parent."
+            )
+
+    def _validate_group_parent(self, tx, group_id: str, parent_id: Optional[str]) -> None:
+        """Walk ancestors iteratively, without imposing a fixed hierarchy depth."""
+        visited = {group_id}
+        while parent_id is not None:
+            if parent_id in visited:
+                raise OrganizationConflict(
+                    "group_cycle", "A group cannot be moved under itself or one of its descendants."
+                )
+            visited.add(parent_id)
+            parent = tx.fetch_one(self._sql("deck_groups.get"), (parent_id,))
+            if parent is None:
+                raise OrganizationNotFound("group")
+            parent_id = parent["parent_id"]
 
     def _write_deck_order(self, tx, deck_ids: list[str]) -> None:
         sql = self._sql("decks.update_order")
@@ -93,11 +125,19 @@ class DeckRepository:
         return self.sq.fetch_all(QUERY_FILE, "decks.list_ready_latest")
 
     def list_library(self) -> dict[str, Any]:
-        groups = self.sq.fetch_all(QUERY_FILE, "deck_groups.list_ordered")
+        # Both reads must share a snapshot. A concurrent create+move must not
+        # make a newly grouped deck appear ungrouped because its group was
+        # absent from an earlier, independent read.
+        with self.db.begin_transaction() as tx:
+            tx.execute("BEGIN")
+            groups = tx.fetch_all(self._sql("deck_groups.list_ordered"))
+            self._checkpoint("library.after_groups")
+            decks = tx.fetch_all(self._sql("library.list_ready_decks"))
         public_groups = [
             {
                 "id": row["id"],
                 "name": row["name"],
+                "parent_id": row["parent_id"],
                 "sort_order": row["sort_order"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
@@ -107,7 +147,7 @@ class DeckRepository:
         ]
         by_id = {group["id"]: group for group in public_groups}
         ungrouped = []
-        for row in self.sq.fetch_all(QUERY_FILE, "library.list_ready_decks"):
+        for row in decks:
             item = library_deck_to_public(row)
             group = by_id.get(item["group_id"])
             if group is None:
@@ -307,15 +347,19 @@ class DeckRepository:
     def get_group(self, group_id: str) -> Optional[dict[str, Any]]:
         return self.sq.fetch_one(QUERY_FILE, "deck_groups.get", (group_id,))
 
-    def create_group(self, group_id: str, name: str) -> dict[str, Any]:
+    def create_group(
+        self, group_id: str, name: str, parent_id: Optional[str] = None
+    ) -> dict[str, Any]:
         ts = now_iso()
         with _ORGANIZATION_LOCK:
             with self.db.begin_transaction() as tx:
                 self._begin_immediate(tx)
-                group_ids = self._group_ids(tx)
+                self._validate_group_parent(tx, group_id, parent_id)
+                self._ensure_group_name_available(tx, name, parent_id)
+                group_ids = self._group_ids(tx, parent_id)
                 tx.execute(
                     self._sql("deck_groups.create"),
-                    (group_id, name, 0, ts, ts),
+                    (group_id, name, parent_id, 0, ts, ts),
                 )
                 self._write_group_order(tx, [group_id, *group_ids])
         return self.get_group(group_id)
@@ -324,44 +368,80 @@ class DeckRepository:
         with _ORGANIZATION_LOCK:
             with self.db.begin_transaction() as tx:
                 self._begin_immediate(tx)
-                cursor = tx.execute(
+                group = tx.fetch_one(self._sql("deck_groups.get"), (group_id,))
+                if group is None:
+                    raise OrganizationNotFound("group")
+                # Legacy databases allowed duplicate sibling names. Preserve
+                # those records and permit unchanged-name requests, but never
+                # introduce another collision through a rename.
+                if name != group["name"]:
+                    self._ensure_group_name_available(tx, name, group["parent_id"], group_id)
+                tx.execute(
                     self._sql("deck_groups.update_name"),
                     (name, now_iso(), group_id),
                 )
-                if cursor.rowcount != 1:
-                    raise OrganizationNotFound("group")
         return self.get_group(group_id)
 
-    def move_group(self, group_id: str, target_index: int) -> dict[str, Any]:
+    def move_group(
+        self,
+        group_id: str,
+        target_index: int,
+        target_parent_id: Optional[str] | object = _PRESERVE_PARENT,
+    ) -> dict[str, Any]:
+        """Reorder siblings or reparent an intact subtree in one transaction.
+
+        Omitting the parent keeps the existing parent for older API clients.
+        Passing None explicitly moves the group to the top level.
+        """
         with _ORGANIZATION_LOCK:
             with self.db.begin_transaction() as tx:
                 self._begin_immediate(tx)
-                if not tx.fetch_one(self._sql("deck_groups.get"), (group_id,)):
+                group = tx.fetch_one(self._sql("deck_groups.get"), (group_id,))
+                if group is None:
                     raise OrganizationNotFound("group")
-                ordered = self._group_ids(tx)
-                ordered.remove(group_id)
-                index = max(0, min(target_index, len(ordered)))
-                ordered.insert(index, group_id)
-                self._write_group_order(tx, ordered)
+                source_parent_id = group["parent_id"]
+                if target_parent_id is _PRESERVE_PARENT:
+                    target_parent_id = source_parent_id
+                self._validate_group_parent(tx, group_id, target_parent_id)
+                if source_parent_id == target_parent_id:
+                    ordered = self._group_ids(tx, source_parent_id)
+                    ordered.remove(group_id)
+                    index = max(0, min(target_index, len(ordered)))
+                    ordered.insert(index, group_id)
+                    self._write_group_order(tx, ordered)
+                else:
+                    self._ensure_group_name_available(tx, group["name"], target_parent_id, group_id)
+                    source = self._group_ids(tx, source_parent_id)
+                    source.remove(group_id)
+                    target = self._group_ids(tx, target_parent_id)
+                    index = max(0, min(target_index, len(target)))
+                    target.insert(index, group_id)
+
+                    self._write_group_order(tx, source)
+                    self._checkpoint("group_move.after_source")
+                    tx.execute(
+                        self._sql("deck_groups.set_parent"),
+                        (target_parent_id, index, now_iso(), group_id),
+                    )
+                    self._checkpoint("group_move.after_parent")
+                    self._write_group_order(tx, target)
         return self.get_group(group_id)
 
     def delete_group(self, group_id: str) -> None:
-        """Append the group's decks to Ungrouped and delete only the group row."""
+        """Delete an empty group; never move or delete its decks or children."""
         with _ORGANIZATION_LOCK:
             with self.db.begin_transaction() as tx:
                 self._begin_immediate(tx)
-                if not tx.fetch_one(self._sql("deck_groups.get"), (group_id,)):
+                group = tx.fetch_one(self._sql("deck_groups.get"), (group_id,))
+                if group is None:
                     raise OrganizationNotFound("group")
-                ungrouped = self._deck_sibling_ids(tx, None)
-                moved = self._deck_sibling_ids(tx, group_id)
-                combined = [*ungrouped, *moved]
-                membership_sql = self._sql("decks.set_membership")
-                timestamp = now_iso()
-                for index, deck_id in enumerate(combined):
-                    tx.execute(membership_sql, (None, index, timestamp, deck_id))
-                self._checkpoint("group_delete.after_decks")
+                if self._group_ids(tx, group_id) or self._deck_sibling_ids(tx, group_id):
+                    raise OrganizationConflict(
+                        "group_not_empty", "Move this group's decks and child groups before deleting it."
+                    )
                 tx.execute(self._sql("deck_groups.delete"), (group_id,))
-                groups = self._group_ids(tx)
+                self._checkpoint("group_delete.after_delete")
+                groups = self._group_ids(tx, group["parent_id"])
                 self._write_group_order(tx, groups)
 
     # --- version reads ----------------------------------------------------

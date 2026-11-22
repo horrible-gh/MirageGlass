@@ -18,9 +18,13 @@ session, new token, or different upload format.
 
 ## Library model
 
-`GET /api/v1/library` returns `groups` in server order and a separate
+`GET /api/v1/library` returns a flat `groups` array and a separate
 `ungrouped` object. Each real group has a stable ID, display name, timestamps,
-`sort_order`, and an ordered `decks` array. Ungrouped is the set of decks whose
+nullable `parent_id`, sibling-local `sort_order`, and an ordered `decks` array
+containing direct members only. Parent links form a tree of unrestricted depth;
+top-level groups have `parent_id: null`. Build the hierarchy from parent links
+and sort each sibling set by `sort_order`, then `id`. The console defaults to
+direct members and offers an explicit Include subgroups view. Ungrouped is the set of decks whose
 `group_id` is SQL NULL; it has no row or ID in `deck_groups`.
 
 Library deck fields:
@@ -42,18 +46,21 @@ original fields. They additionally expose `updated_at`, `group_id`,
 `sort_order`, `favorite`, and `last_viewed_at`. `GET /api/v1/decks` remains
 newest-first; use the library endpoint for server organization order.
 
-Names are not identifiers and need not be unique. Rename endpoints trim and
-validate names at 1–120 characters. The client must render names and version
+Names are not identifiers or globally unique. New group changes require exact,
+case-sensitive uniqueness among siblings after trimming; duplicate names under
+different parents are allowed. Legacy duplicate siblings survive migration and
+remain reorderable. Rename endpoints trim and validate names at 1–120 characters.
+The client must render names and version
 notes as text or escape them before inserting HTML.
 
 ## Organization and metadata writes
 
 | Operation | Endpoint | JSON |
 | --- | --- | --- |
-| Create group | `POST /api/v1/groups` | `{name}` |
+| Create group | `POST /api/v1/groups` | `{name,parent_id?}`; omitted/null parent means top level |
 | Rename group | `PATCH /api/v1/groups/{id}` | `{name}` |
-| Reorder group | `POST /api/v1/groups/{id}/move` | `{index}` |
-| Delete group, retain its decks | `DELETE /api/v1/groups/{id}` | None |
+| Reorder or reparent a group | `POST /api/v1/groups/{id}/move` | `{index,parent_id?}`; omit parent to keep it, null to move to top level |
+| Delete an empty group | `DELETE /api/v1/groups/{id}` | None |
 | Rename deck | `PATCH /api/v1/decks/{id}` | `{name}` |
 | Move one deck | `POST /api/v1/decks/{id}/move` | `{group_id,index}` |
 | Move multiple decks | `POST /api/v1/decks/move` | `{deck_ids,group_id,index}` |
@@ -73,8 +80,19 @@ Bulk move order follows the supplied `deck_ids`. Its nonnegative integer
 the destination size append. Source and target sibling orders are normalized.
 Repeated requests yield the same placement if no other write intervenes.
 The legacy single-item/group move endpoints retain their clamped index behavior.
-Deleting a group appends its ordered contents to Ungrouped, without deleting
-decks or versions.
+Group indices address destination siblings after removing the moving group.
+Reparenting preserves every child group and deck membership; only the moved
+group's parent and affected sibling orders change. Self/descendant parents are
+rejected with `409 group_cycle`, and new sibling-name conflicts with
+`409 duplicate_group_name`. An unchanged-name request and same-parent reorder
+remain valid for preserved legacy duplicates.
+
+Deleting a group requires no child groups and no direct decks of any status.
+Otherwise the API returns `409 group_not_empty` without moving or deleting
+anything. This intentionally replaces the former auto-ungroup behavior. Empty
+deletion and validation share the organization transaction, including against
+concurrent moves or child creation. Reads and writes retain their existing
+authorization model; nesting introduces no group-specific access policy.
 
 Favorite updates set an explicit boolean and never toggle. Recent visits are
 recorded only by POST, not by read endpoints. Neither changes the active
@@ -117,6 +135,7 @@ dependency tree. The underlying deck version remains available separately.
 | `003_deck_screens.sql` | Add nullable `deck_versions.screens_json` |
 | `004_library_groups.sql` | Add groups, nullable membership, and ordered siblings |
 | `005_library_metadata.sql` | Add favorite, recent visit, and version note metadata |
+| `006_group_hierarchy.sql` | Add nullable parent links and indexes while preserving existing top-level groups |
 
 Migration 005 adds `decks.favorite INTEGER NOT NULL DEFAULT 0`,
 `decks.last_viewed_at TEXT`, and
@@ -124,6 +143,16 @@ Migration 005 adds `decks.favorite INTEGER NOT NULL DEFAULT 0`,
 order, active pointers, archive files, and version rows are retained. The
 migration ledger prevents repeated backfilling at startup. Back up the complete
 `storage/` directory before upgrading a running instance.
+
+Migration 006 adds `deck_groups.parent_id` referencing `deck_groups.id`, with
+delete restriction and a self-parent check. Parent/order and parent/name indexes
+support sibling operations. All previous groups remain top-level with their
+original names, IDs, orders, and memberships. A unique name index is deliberately
+not added because older databases may contain duplicate sibling names; the
+repository enforces new conflicts inside `BEGIN IMMEDIATE` transactions.
+There is no automatic regrouping, name cleanup, or data deletion. Follow the
+[upgrade and organization sequence](automation.md#upgrading-and-organizing-existing-decks)
+before reorganizing a live library.
 
 All parameterized application SQL stays in `server/sql/queries/queries.json`.
 The sqloader configuration key is `sqloder`; the installed package/import is

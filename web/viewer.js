@@ -277,8 +277,8 @@ async function selectDeck(id, {preferredScreen = null, preferredScope = 'deck'} 
   ++versionLoadGeneration; ++frameGeneration;
   currentId = id; screens = []; currentScreenKey = null; scope = preferredScope; versionData = null; mode = 'single';
   versionA = null; versionB = null; viewingVersion = null;
-  document.querySelector('#bar .title').textContent = deck.name; $('current-crumb').textContent = deck.name;
-  $('viewer-group').textContent = libraryData?.groups.find(group => group.id === deck.group_id)?.name || t('ungrouped');
+  document.querySelector('#bar .title').textContent = deck.name; $('current-crumb').textContent = deck.name; $('current-crumb').title = deck.name;
+  $('viewer-group').textContent = groupPath(deck.group_id) || t('ungrouped'); $('viewer-group').title = $('viewer-group').textContent;
   $('frame-a').removeAttribute('src'); $('frame-b').removeAttribute('src'); $('message-a').hidden = false; $('message-a').textContent = t('loading');
   $('scope-switch').hidden = true; updateModeButtons(); renderVersionControls(); renderDecks(); renderVersions(); updateViewingTag();
   try {

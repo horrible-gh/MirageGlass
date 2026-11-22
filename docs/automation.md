@@ -27,15 +27,19 @@ decks = [deck for group in library["groups"] for deck in group["decks"]]
 decks.extend(library["ungrouped"]["decks"])
 ```
 
-`groups` contains stored groups in server order. Each group's `decks` array is
-also in server order. `ungrouped.decks` contains records with `group_id: null`;
+`groups` remains a flat array of stored groups, with a nullable `parent_id` on
+every group. A `null` parent identifies a top-level group. Use `parent_id` to
+build the hierarchy and `sort_order` to order siblings; do not infer hierarchy
+from names or array positions. Each group's `decks` array contains only its
+direct members, in server order. `ungrouped.decks` contains records with `group_id: null`;
 Ungrouped does not have a group ID. Deck records include their ID, name,
 membership, order, active/latest version, timestamps, favorite state, and
 `last_viewed_at`. The legacy `GET /api/v1/decks` remains newest-first and is not
 an organization-order endpoint.
 
 Use IDs for subsequent writes. Group and deck names are editable display text,
-and two groups can have the same name. Resolve an ambiguous name before changing
+and groups under different parents can have the same name. Resolve a group by its
+full ancestry and ID before changing
 anything. A successful library read is a current listing that may become stale
 as another client writes. It is not a revision-locked database snapshot.
 
@@ -85,7 +89,54 @@ keeps the same placement when no other client changes that scope. Re-read the
 library before resolving a concurrent user's changes; this API does not offer
 an optimistic revision precondition.
 
-## Rename, reorder, and remove groups
+## Create subgroups, move groups, and reorder siblings
+
+```python
+project = call("POST", "/api/v1/groups", json={"name": "Project"})
+version = call("POST", "/api/v1/groups", json={
+    "name": "v0.2",
+    "parent_id": project["id"],
+})
+work = call("POST", "/api/v1/groups", json={
+    "name": "Settings",
+    "parent_id": version["id"],
+})
+
+# Reorder inside the current parent: omitting parent_id preserves it.
+call("POST", f"/api/v1/groups/{work['id']}/move", json={"index": 0})
+
+# Move the entire group and its descendants to another parent.
+call("POST", f"/api/v1/groups/{work['id']}/move", json={
+    "parent_id": project["id"],
+    "index": 0,
+})
+
+# An explicit null moves a group to the top level.
+call("POST", f"/api/v1/groups/{work['id']}/move", json={
+    "parent_id": None,
+    "index": 0,
+})
+```
+
+Creation defaults to the top level and inserts the group at the front of its
+sibling order. A group's move index addresses the destination's remaining
+siblings, excluding the moving group, and is clamped to their range. Moving a
+group leaves its ID, descendants, deck memberships, versions, and viewer URLs
+unchanged. Validation and changes happen in one transaction. A group cannot be
+moved beneath itself or any descendant, at any depth.
+
+Names are trimmed and compared case-sensitively within the same parent. A new
+group, changed name, or changed parent cannot introduce a matching sibling name.
+Names under different parents may match. Legacy duplicate siblings are retained
+on upgrade; their unchanged names and same-parent reorders remain valid.
+
+For an aggregate view, walk the chosen group's descendants using `parent_id`
+and concatenate their direct `decks` arrays. Each deck belongs to exactly one
+group, so the flat library response never repeats a deck in its ancestors.
+The console's **Include subgroups** option uses this approach; its default group
+view remains direct members only.
+
+## Rename and remove groups
 
 ```python
 call("PATCH", f"/api/v1/groups/{group_id}", json={"name": "Landing pages"})
@@ -93,10 +144,39 @@ call("POST", f"/api/v1/groups/{group_id}/move", json={"index": 0})
 call("PATCH", f"/api/v1/decks/{deck_id}", json={"name": "Landing / desktop"})
 ```
 
-`DELETE /api/v1/groups/{id}` deletes only the group. Its decks are appended to
-Ungrouped in their existing order. `DELETE /api/v1/decks/{id}` removes the deck
-and its version files. Both remain explicit operations; a group cleanup does
-not imply deleting its contents.
+`DELETE /api/v1/groups/{id}` deletes only an empty group. Any child group or
+assigned deck blocks deletion with `409 group_not_empty`, including decks that
+are processing or failed and therefore absent from the ready library. Move the
+contents first, then delete the empty group. This deliberately replaces the old
+behavior that silently moved members to Ungrouped. Group deletion never deletes
+decks or versions. `DELETE /api/v1/decks/{id}` still removes the explicitly named
+deck and its version files.
+
+## Upgrading and organizing existing decks
+
+1. Before upgrading, stop writes and take a recoverable copy of the complete
+   configured `MIRAGEGLASS_STORAGE` directory, including `mirageglass.db` and
+   `decks/`. Stop the server while copying so database and archive files represent
+   the same point in time. A library JSON export alone cannot restore source
+   archives or version history.
+2. Read and save `GET /api/v1/library` and, where needed, each deck's version
+   listing to record existing IDs, names, memberships, and order. Verify actual
+   counts from this instance rather than relying on an earlier report.
+3. Test the upgrade on a copy. Migration 006 only adds the parent link and its
+   indexes: all old groups remain top-level with their original IDs, names,
+   ordering, and decks. Startup does not reorganize or delete existing content.
+4. Validate nested creation, direct and aggregate browsing, group/deck moves,
+   empty-only deletion, and existing active/version-specific links before
+   applying the same code to the live instance.
+5. Prepare a proposed project/version mapping with exact source and destination
+   IDs and a reason for each move. Obtain agreement on the live movement scope,
+   then try a small approved selection and re-read the library to verify it.
+   Deletion requires its own explicit authorization.
+
+Rollback before any new writes can restore the complete backup alongside the
+previous code. Do not restore an old database over newer uploads without first
+accounting for those changes. The hierarchy feature itself has no rollback,
+cleanup, status inference, or automatic data-reclassification job.
 
 ## Favorites and recent visits
 
@@ -170,10 +250,15 @@ screen's entry HTML, not every dependency file.
 - `404`: a deck, version, or group no longer exists. Refresh the library before
   deciding how to repair the selection. Bulk operations make no partial writes.
 - `422`: the JSON shape, index, ID selection, name, or note is invalid.
-- `409`: a requested version is not ready for the requested read/activation.
+- `409`: a requested version is not ready, or an organization rule rejects the
+  request. Structured `detail.code` values are `duplicate_group_name` for a
+  sibling-name conflict, `group_cycle` for a self/descendant move, and
+  `group_not_empty` for deleting a group with decks or children. A rejected
+  organization write leaves memberships and ordering unchanged.
 - A rejected archive remains a `400`; existing upload retry rules are unchanged.
 - Group creation has no idempotency key. If its response is lost, re-read the
-  library before retrying to avoid creating a duplicate group.
+  library before retrying. A sibling-name conflict does not prove that the
+  existing group was created by your request; confirm its identity and parent.
 - A network failure after any write leaves the result uncertain. Read the
   server state before issuing a compensating operation.
 

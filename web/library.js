@@ -2,6 +2,7 @@
 
 const PAGE_SIZE = 24;
 const FAVORITE_MIGRATION_KEY = 'mg.library.favorite-migration.v1';
+const GROUP_COLLAPSE_KEY = 'mg.library.collapsed-groups.v1';
 let libraryData = null;
 let libraryLoadGeneration = 0;
 let organizationMoveInFlight = false;
@@ -9,7 +10,8 @@ let dragState = null;
 let suppressDeckClickUntil = 0;
 let migrationInFlight = null;
 const pendingFavorites = new Set();
-const libraryState = {nav:'all',sort:'updated',layout:'grid',visibleCount:PAGE_SIZE,selectMode:false,selected:new Set(),lastSelected:null};
+const collapsedGroups = new Set(readJsonList(GROUP_COLLAPSE_KEY));
+const libraryState = {nav:'all',sort:'updated',layout:'grid',visibleCount:PAGE_SIZE,selectMode:false,selected:new Set(),lastSelected:null,includeSubgroups:false};
 let libZoomPercent = 100;
 
 function applyLibZoom() {
@@ -31,6 +33,64 @@ function libraryDecksFor(groupId, data = libraryData) {
   return !data ? [] : groupId === null ? data.ungrouped.decks : data.groups.find(group => group.id === groupId)?.decks || [];
 }
 function groupName(groupId) { return groupId === null ? t('ungrouped') : libraryData?.groups.find(group => group.id === groupId)?.name || ''; }
+function findGroup(id) { return libraryData?.groups.find(group => group.id === id) || null; }
+function groupParent(group) { return group?.parent_id ?? null; }
+function groupSiblings(parentId) {
+  return (libraryData?.groups || []).filter(group => groupParent(group) === parentId).sort((left,right) => left.sort_order - right.sort_order || left.id.localeCompare(right.id));
+}
+function groupTrail(groupId) {
+  const trail = [], seen = new Set();
+  let group = findGroup(groupId);
+  while (group && !seen.has(group.id)) {
+    trail.push(group); seen.add(group.id); group = findGroup(groupParent(group));
+  }
+  return trail.reverse();
+}
+function groupPath(groupId) { return groupId === null ? t('ungrouped') : groupTrail(groupId).map(group => group.name).join(' / '); }
+function groupTreeRows(visibleOnly = false) {
+  const groups = libraryData?.groups || [], known = new Set(groups.map(group => group.id)), byParent = new Map();
+  for (const group of groups) {
+    const parent = known.has(groupParent(group)) ? groupParent(group) : null;
+    if (!byParent.has(parent)) byParent.set(parent,[]);
+    byParent.get(parent).push(group);
+  }
+  for (const siblings of byParent.values()) siblings.sort((left,right) => left.sort_order - right.sort_order || left.id.localeCompare(right.id));
+  const stack = (byParent.get(null) || []).slice().reverse().map(group => ({group,depth:0})), rows = [], seen = new Set();
+  while (stack.length) {
+    const row = stack.pop(); if (seen.has(row.group.id)) continue;
+    seen.add(row.group.id); rows.push(row);
+    if (visibleOnly && collapsedGroups.has(row.group.id)) continue;
+    const children = byParent.get(row.group.id) || [];
+    for (let index = children.length - 1; index >= 0; index--) stack.push({group:children[index],depth:row.depth + 1});
+  }
+  return rows;
+}
+function groupDescendantIds(groupId) {
+  const ids = new Set(), stack = [groupId];
+  while (stack.length) {
+    const id = stack.pop(); if (ids.has(id)) continue;
+    ids.add(id); stack.push(...groupSiblings(id).map(group => group.id));
+  }
+  return ids;
+}
+function saveCollapsedGroups() {
+  try { localStorage.setItem(GROUP_COLLAPSE_KEY,JSON.stringify([...collapsedGroups])); } catch (_) { /* Keep the current page preference. */ }
+}
+function revealGroup(groupId) {
+  let changed = false;
+  for (const group of groupTrail(groupId).slice(0,-1)) if (collapsedGroups.delete(group.id)) changed = true;
+  if (changed) saveCollapsedGroups();
+}
+function navigationGroupId() {
+  return location.hash ? findLibraryDeck(location.hash.slice(1))?.group_id : currentGroupId();
+}
+function includesSubgroups() { return libraryState.includeSubgroups && typeof currentGroupId() === 'string' && !$('lib-search').value.trim(); }
+function groupDecksWithDescendants(groupId) {
+  const ids = groupDescendantIds(groupId), seen = new Set();
+  return groupTreeRows().filter(({group}) => ids.has(group.id)).flatMap(({group}) => group.decks).filter(deck => {
+    if (seen.has(deck.id)) return false; seen.add(deck.id); return true;
+  });
+}
 function dialogGroupValue(groupId) { return groupId === null ? 'ungrouped' : 'group:' + groupId; }
 function parseDialogGroupValue(value) { return value === 'ungrouped' ? null : value.slice(6); }
 function currentGroupId() { return libraryState.nav === 'ungrouped' ? null : libraryState.nav.startsWith('group:') ? libraryState.nav.slice(6) : undefined; }
@@ -65,6 +125,13 @@ async function loadLibrary() {
     const known = new Set(allLibraryDecks().map(deck => deck.id));
     libraryState.selected = new Set([...libraryState.selected].filter(id => known.has(id)));
     if (libraryState.nav.startsWith('group:') && !data.groups.some(group => libraryState.nav === 'group:' + group.id)) libraryState.nav = 'ungrouped';
+    const groupIds = new Set(data.groups.map(group => group.id));
+    for (const id of collapsedGroups) if (!groupIds.has(id)) collapsedGroups.delete(id);
+    revealGroup(navigationGroupId());
+    if (location.hash) {
+      const deck = findLibraryDeck(location.hash.slice(1));
+      if (deck) { $('viewer-group').textContent = groupPath(deck.group_id); $('viewer-group').title = groupPath(deck.group_id); }
+    }
     renderLibrary(); return true;
   } catch (_) {
     if (generation !== libraryLoadGeneration) return false;
@@ -77,10 +144,10 @@ async function loadLibrary() {
 function filteredDecks() {
   const query = $('lib-search').value.trim().toLocaleLowerCase();
   let items = allLibraryDecks();
-  if (query) items = items.filter(deck => [deck.name,groupName(deck.group_id),deck.id].some(value => String(value).toLocaleLowerCase().includes(query)));
+  if (query) items = items.filter(deck => [deck.name,groupPath(deck.group_id),deck.id].some(value => String(value).toLocaleLowerCase().includes(query)));
   else if (libraryState.nav === 'pinned') items = items.filter(deck => deck.favorite);
   else if (libraryState.nav === 'recent') items = items.filter(deck => deck.last_viewed_at);
-  else if (currentGroupId() !== undefined) items = libraryDecksFor(currentGroupId());
+  else if (currentGroupId() !== undefined) items = includesSubgroups() ? groupDecksWithDescendants(currentGroupId()) : libraryDecksFor(currentGroupId());
   items = [...items];
   const byName = (left,right) => left.name.localeCompare(right.name,'ko',{numeric:true}) || left.id.localeCompare(right.id);
   if (!query && libraryState.nav === 'recent') items.sort((left,right) => String(right.last_viewed_at).localeCompare(String(left.last_viewed_at)) || byName(left,right));
@@ -95,18 +162,53 @@ function updateProjectNav() {
   $('nav-total').textContent = allLibraryDecks().length;
   $('nav-favorite-count').textContent = allLibraryDecks().filter(deck => deck.favorite).length || '';
   $('nav-ungrouped-count').textContent = libraryData.ungrouped.decks.length;
-  const nav = $('project-nav'); nav.innerHTML = '';
-  libraryData.groups.forEach(group => {
-    const row = document.createElement('div'); row.className = 'project-item'; row.dataset.groupId = group.id;
+  const nav = $('project-nav'), selectedId = navigationGroupId(), ancestors = new Set(groupTrail(selectedId).slice(0,-1).map(group => group.id));
+  const scrollTop = nav.scrollTop; nav.innerHTML = '';
+  groupTreeRows(true).forEach(({group,depth}) => {
+    const children = groupSiblings(group.id), expanded = !collapsedGroups.has(group.id);
+    const row = document.createElement('div'); row.className = 'project-item'; row.dataset.groupId = group.id; row.dataset.depth = String(depth); row.style.setProperty('--group-depth',Math.min(depth,6));
+    row.classList.toggle('current-ancestor',ancestors.has(group.id));
+    const toggle = document.createElement('button'); toggle.className = 'group-toggle'; toggle.draggable = false;
+    toggle.innerHTML = icon('chevronRight'); toggle.setAttribute('aria-label',t(expanded ? 'collapseGroup' : 'expandGroup',{name:group.name}));
+    if (children.length) {
+      toggle.setAttribute('aria-expanded',String(expanded));
+      toggle.onclick = () => {
+        if (collapsedGroups.has(group.id)) collapsedGroups.delete(group.id); else collapsedGroups.add(group.id);
+        saveCollapsedGroups(); updateProjectNav();
+        document.querySelector('#project-nav .project-item[data-group-id="' + CSS.escape(group.id) + '"] .group-toggle')?.focus({preventScroll:true});
+      };
+    } else { toggle.hidden = true; toggle.tabIndex = -1; }
+    const slot = document.createElement('span'); slot.className = 'group-toggle-slot'; slot.append(toggle);
     const button = document.createElement('button'); button.className = 'side-link'; button.dataset.nav = 'group:' + group.id; button.draggable = true;
     button.innerHTML = '<span class="project-dot" style="background:' + groupColor(group.id) + '"></span><span class="project-name">' + esc(group.name) + '</span><span class="count">' + group.decks.length + '</span>';
-    button.title = group.name; button.onclick = () => setNav('group:' + group.id);
+    button.title = groupPath(group.id); button.onclick = () => setNav('group:' + group.id);
+    button.setAttribute('aria-label',groupPath(group.id));
+    button.onkeydown = event => {
+      if (!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(event.key)) return;
+      event.preventDefault();
+      if (event.key === 'ArrowRight' && children.length) {
+        if (!expanded) toggle.click(); else focusScope(children[0].id);
+      } else if (event.key === 'ArrowLeft') {
+        if (children.length && expanded) toggle.click(); else if (groupParent(group)) focusScope(groupParent(group));
+      } else if (['ArrowUp','ArrowDown','Home','End'].includes(event.key)) {
+        const links = [...nav.querySelectorAll('.side-link')], index = links.indexOf(button);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? links.length - 1 : index + (event.key === 'ArrowUp' ? -1 : 1);
+        links[Math.max(0,Math.min(next,links.length - 1))]?.focus();
+      }
+    };
     button.ondragstart = event => startLibraryDrag(event,{kind:'group',id:group.id},row); button.ondragend = finishLibraryDrag;
     const menu = document.createElement('button'); menu.className = 'lib-group-kebab'; menu.setAttribute('aria-label',t('groupActions')); menu.setAttribute('aria-haspopup','menu'); menu.textContent = '⋮';
-    menu.onclick = () => openMenu(menu,[{label:t('rename'),action:'rename',onClick:() => renameGroup(group)},{label:t('reorder'),action:'reorder',onClick:() => chooseGroupReorder(group)},{label:t('delete'),action:'delete',destructive:true,onClick:() => deleteGroup(group)}]);
-    row.append(button,menu);
+    menu.onclick = () => openMenu(menu,[
+      {label:t('newSubgroup'),action:'new-subgroup',onClick:() => createGroup(group.id)},
+      {label:t('rename'),action:'rename',onClick:() => renameGroup(group)},
+      {label:t('moveGroup'),action:'move',onClick:() => chooseGroupMove(group)},
+      {label:t('reorder'),action:'reorder',onClick:() => chooseGroupReorder(group)},
+      {separator:true},{label:t('delete'),action:'delete',destructive:true,onClick:() => deleteGroup(group)}
+    ]);
+    row.append(slot,button,menu);
     row.ondragover = event => {
       if (!dragState) return;
+      if (dragState.kind === 'group' && groupParent(findGroup(dragState.id)) !== groupParent(group)) { clearDropHighlights(); return; }
       event.preventDefault(); event.dataTransfer.dropEffect = 'move';
       showDropHighlight(row,dragState.kind === 'group' ? (event.clientY < row.getBoundingClientRect().top + row.offsetHeight / 2 ? 'drop-before' : 'drop-after') : 'deck-drop-target');
       autoScrollProjects(event);
@@ -117,13 +219,28 @@ function updateProjectNav() {
     };
     nav.append(row);
   });
+  nav.scrollTop = scrollTop;
   document.querySelectorAll('.side-link[data-nav]').forEach(button => {
-    const active = button.dataset.nav === libraryState.nav;
+    const activeNav = location.hash ? selectedId === null ? 'ungrouped' : selectedId ? 'group:' + selectedId : '' : libraryState.nav;
+    const active = button.dataset.nav === activeNav;
     button.classList.toggle('active',active); if (active) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current');
   });
 }
 function groupOptions() {
-  return (libraryData?.groups || []).map(group => '<option value="group:' + esc(group.id) + '">' + esc(group.name) + '</option>').join('') + '<option value="ungrouped">' + esc(t('ungrouped')) + '</option>';
+  const labels = groupOptionLabels();
+  return groupTreeRows().map(({group}) => '<option value="group:' + esc(group.id) + '">' + esc(labels.get(group.id)) + '</option>').join('') + '<option value="ungrouped">' + esc(t('ungrouped')) + '</option>';
+}
+function groupParentOptions(excluded = new Set()) {
+  const labels = groupOptionLabels();
+  return '<option value="root">' + esc(t('rootGroups')) + '</option>' + groupTreeRows().filter(({group}) => !excluded.has(group.id)).map(({group}) => '<option value="group:' + esc(group.id) + '">' + esc(labels.get(group.id)) + '</option>').join('');
+}
+function groupOptionLabels() {
+  const labels = new Map(), counts = new Map();
+  for (const group of libraryData?.groups || []) {
+    const path = groupPath(group.id); labels.set(group.id,path); counts.set(path,(counts.get(path) || 0) + 1);
+  }
+  for (const [id,path] of labels) if (counts.get(path) > 1) labels.set(id,path + ' · ' + id);
+  return labels;
 }
 function renderSelection() {
   const count = libraryState.selected.size, visible = libraryState.selectMode || count > 0;
@@ -146,11 +263,18 @@ function renderSelection() {
 function renderLibrary() {
   if (!libraryData) return;
   updateProjectNav();
+  if (includesSubgroups() && libraryState.sort === 'manual') libraryState.sort = 'updated';
   const query = $('lib-search').value.trim(), items = filteredDecks();
   const name = query ? t('searchResults') : currentGroupId() !== undefined ? groupName(currentGroupId()) : t({all:'libraryTitle',recent:'recent',pinned:'favorites'}[libraryState.nav] || 'libraryTitle');
   $('library-title').textContent = name; $('library-count').textContent = t('count',{count:items.length});
-  $('library-desc').textContent = query ? t('searchDescription') : currentGroupId() !== undefined ? t('groupDescription') : t({all:'libraryDescription',recent:'recentDescription',pinned:'favoritesDescription'}[libraryState.nav] || 'libraryDescription');
-  if (!location.hash) $('current-crumb').textContent = query ? t('searchResults') : currentGroupId() !== undefined ? groupName(currentGroupId()) : t({all:'all',recent:'recent',pinned:'favorites'}[libraryState.nav] || 'all');
+  $('library-desc').textContent = query ? t('searchDescription') : currentGroupId() !== undefined ? t(includesSubgroups() ? 'subgroupsDescription' : 'directGroupDescription') : t({all:'libraryDescription',recent:'recentDescription',pinned:'favoritesDescription'}[libraryState.nav] || 'libraryDescription');
+  if (!location.hash) {
+    $('current-crumb').textContent = query ? t('searchResults') : currentGroupId() !== undefined ? groupPath(currentGroupId()) : t({all:'all',recent:'recent',pinned:'favorites'}[libraryState.nav] || 'all');
+    $('current-crumb').title = $('current-crumb').textContent;
+  }
+  $('group-scope-control').hidden = Boolean(query) || typeof currentGroupId() !== 'string';
+  $('include-subgroups').checked = includesSubgroups();
+  $('lib-sort').querySelector('option[value="manual"]').disabled = includesSubgroups();
   $('toolbar-label').textContent = t('shown',{shown:Math.min(libraryState.visibleCount,items.length),total:items.length});
   $('lib-sort').value = libraryState.sort; $('lib-sort').disabled = libraryState.nav === 'recent' && !query;
   $('layout-grid').setAttribute('aria-pressed',String(libraryState.layout === 'grid')); $('layout-list').setAttribute('aria-pressed',String(libraryState.layout === 'list'));
@@ -186,7 +310,7 @@ function buildDeckCard(deck) {
     const image = document.createElement('img'); image.src = versionedThumbUrl(deck); image.alt = ''; image.loading = 'lazy'; image.draggable = false;
     image.onerror = () => { image.remove(); thumb.insertAdjacentHTML('afterbegin',icon('screen')); }; thumb.append(image);
   } else thumb.innerHTML = icon('screen');
-  const badge = document.createElement('span'); badge.className = 'thumb-overlay'; badge.textContent = groupName(deck.group_id); thumb.append(badge);
+  const badge = document.createElement('span'); badge.className = 'thumb-overlay'; badge.textContent = groupPath(deck.group_id); badge.title = groupPath(deck.group_id); thumb.append(badge);
   const selection = document.createElement('button'); selection.className = 'deck-select'; selection.setAttribute('role','checkbox'); selection.setAttribute('aria-label',t('selectDeck',{name:deck.name})); selection.setAttribute('aria-checked',String(libraryState.selected.has(deck.id))); selection.draggable = false;
   selection.onclick = event => { event.stopPropagation(); selectDeckItem(deck.id,event); };
   const body = document.createElement('div'); body.className = 'card-body';
@@ -213,11 +337,11 @@ function buildDeckCard(deck) {
   };
   card.ondragend = finishLibraryDrag;
   card.ondragover = event => {
-    if (dragState?.kind !== 'deck') return;
+    if (dragState?.kind !== 'deck' || includesSubgroups()) return;
     event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'move';
     if (!dragState.ids.includes(deck.id)) showDropHighlight(card,cardDropPosition(event,card) === 'before' ? 'drop-before' : 'drop-after');
   };
-  card.ondrop = event => dropDecks(event,deck.group_id,deck.id,cardDropPosition(event,card));
+  card.ondrop = event => { if (!includesSubgroups()) dropDecks(event,deck.group_id,deck.id,cardDropPosition(event,card)); };
   return card;
 }
 function cardDropPosition(event,card) {
@@ -259,6 +383,7 @@ async function togglePin(id) {
 }
 function setNav(nav) {
   libraryState.nav = nav; libraryState.visibleCount = PAGE_SIZE; $('lib-search').value = '';
+  libraryState.includeSubgroups = false; revealGroup(currentGroupId());
   libraryState.sort = nav.startsWith('group:') || nav === 'ungrouped' ? 'manual' : 'updated';
   closeMobileMenu(); closeMenu();
   if (location.hash) location.hash = ''; else renderLibrary();
@@ -302,22 +427,29 @@ function dropGroup(event,targetId,position) {
   if (dragState?.kind !== 'group') return;
   event.preventDefault(); event.stopPropagation(); const id = dragState.id; finishLibraryDrag();
   if (id === targetId) return;
-  const others = libraryData.groups.map(group => group.id).filter(groupId => groupId !== id);
+  const parentId = groupParent(findGroup(id));
+  if (parentId !== groupParent(findGroup(targetId))) return;
+  const others = groupSiblings(parentId).map(group => group.id).filter(groupId => groupId !== id);
   const index = others.indexOf(targetId) + (position === 'after' ? 1 : 0);
   void dispatchOrganizationMove({kind:'group',id,index});
 }
 async function dispatchOrganizationMove(command) {
   if (!libraryData || organizationMoveInFlight) return false;
   const ids = command.ids || [command.id];
-  if (command.kind === 'group' ? libraryData.groups.findIndex(group => group.id === command.id) === command.index : isBulkMoveNoop(ids,command.groupId,command.index)) return true;
+  const oldParentId = command.kind === 'group' ? groupParent(findGroup(command.id)) : null;
+  const parentId = Object.hasOwn(command,'parentId') ? command.parentId : oldParentId;
+  if (command.kind === 'group' ? oldParentId === parentId && groupSiblings(oldParentId).findIndex(group => group.id === command.id) === command.index : isBulkMoveNoop(ids,command.groupId,command.index)) return true;
   organizationMoveInFlight = true; renderSelection();
   try {
-    if (command.kind === 'group') await apiRequest('/api/v1/groups/' + encodeURIComponent(command.id) + '/move',jsonRequest('POST',{index:command.index}));
-    else await apiRequest('/api/v1/decks/move',jsonRequest('POST',{deck_ids:ids,group_id:command.groupId,index:command.index}));
+    if (command.kind === 'group') {
+      const payload = {index:command.index};
+      if (Object.hasOwn(command,'parentId')) payload.parent_id = command.parentId;
+      await apiRequest('/api/v1/groups/' + encodeURIComponent(command.id) + '/move',jsonRequest('POST',payload));
+    } else await apiRequest('/api/v1/decks/move',jsonRequest('POST',{deck_ids:ids,group_id:command.groupId,index:command.index}));
     if (command.kind !== 'group') ids.forEach(id => libraryState.selected.delete(id));
     await loadLibrary();
-    announceLibrary(command.kind === 'group' ? t('reordered') : t('moved',{count:ids.length}));
-    if (command.kind === 'group') focusLibraryItem('group',command.id);
+    announceLibrary(command.kind === 'group' ? t(oldParentId === parentId ? 'reordered' : 'groupMoved') : t('moved',{count:ids.length}));
+    if (command.kind === 'group') { revealGroup(command.id); updateProjectNav(); focusLibraryItem('group',command.id); }
     else if (ids.length === 1 && document.querySelector('#lib-groups .lib-card[data-deck-id="' + CSS.escape(ids[0]) + '"]')) focusLibraryItem('deck',ids[0]);
     else focusScope(command.groupId);
     return true;
@@ -341,22 +473,40 @@ async function chooseDeckMove(deck) {
   const result = await pending;
   if (result.action === 'confirm') {
     const groupId = parseDialogGroupValue(result.values.group);
-    if (currentGroupId() === groupId) libraryState.sort = 'manual';
+    if (currentGroupId() === groupId && !includesSubgroups()) libraryState.sort = 'manual';
     await dispatchOrganizationMove({kind:'decks',ids,groupId,index:Number(result.values.index)});
   }
 }
 async function chooseGroupReorder(group) {
   if (organizationMoveInFlight) return;
-  const others = libraryData.groups.filter(item => item.id !== group.id);
+  const siblings = groupSiblings(groupParent(group)), others = siblings.filter(item => item.id !== group.id);
   const options = others.map((item,index) => '<option value="' + index + '">' + (index + 1) + ' · ' + esc(t('beforeItem',{name:item.name})) + '</option>').join('') + '<option value="' + others.length + '">' + (others.length + 1) + ' · ' + esc(t('endSection')) + '</option>';
   const pending = openGenericDialog({title:t('reorder'),confirmText:t('move'),bodyHtml:'<label class="dialog-field">' + esc(t('position')) + '<select id="dialog-group-index" data-dialog-field="index">' + options + '</select></label>'});
-  $('dialog-group-index').value = String(libraryData.groups.findIndex(item => item.id === group.id));
+  $('dialog-group-index').value = String(siblings.findIndex(item => item.id === group.id));
   const result = await pending;
   if (result.action === 'confirm') await dispatchOrganizationMove({kind:'group',id:group.id,index:Number(result.values.index)});
 }
-async function createGroup() {
-  const name = await promptName({title:t('newGroup'),label:t('groupName')}); if (name === null) return;
-  try { const group = await apiRequest('/api/v1/groups',jsonRequest('POST',{name})); await loadLibrary(); focusScope(group.id); }
+function fillGroupPositionOptions(select,group,parentId) {
+  const siblings = groupSiblings(parentId), others = siblings.filter(item => item.id !== group.id);
+  select.innerHTML = others.map((item,index) => '<option value="' + index + '">' + (index + 1) + ' · ' + esc(t('beforeItem',{name:item.name})) + '</option>').join('') + '<option value="' + others.length + '">' + (others.length + 1) + ' · ' + esc(t('endSection')) + '</option>';
+  select.value = String(parentId === groupParent(group) ? siblings.findIndex(item => item.id === group.id) : others.length);
+}
+async function chooseGroupMove(group) {
+  if (organizationMoveInFlight) return;
+  const pending = openGenericDialog({title:t('moveGroup'),confirmText:t('move'),bodyHtml:'<label class="dialog-field">' + esc(t('parentGroup')) + '<select id="dialog-group-parent" data-dialog-field="parent">' + groupParentOptions(groupDescendantIds(group.id)) + '</select></label><label class="dialog-field">' + esc(t('position')) + '<select id="dialog-group-index" data-dialog-field="index"></select></label>'});
+  const parent = $('dialog-group-parent'), index = $('dialog-group-index');
+  parent.value = groupParent(group) === null ? 'root' : 'group:' + groupParent(group);
+  const update = () => fillGroupPositionOptions(index,group,parent.value === 'root' ? null : parent.value.slice(6));
+  parent.onchange = update; update();
+  const result = await pending;
+  if (result.action === 'confirm') await dispatchOrganizationMove({kind:'group',id:group.id,parentId:result.values.parent === 'root' ? null : result.values.parent.slice(6),index:Number(result.values.index)});
+}
+async function createGroup(parentId = null) {
+  const pending = openGenericDialog({title:t(parentId === null ? 'newGroup' : 'newSubgroup'),confirmText:t('save'),bodyHtml:'<label class="dialog-field">' + esc(t('groupName')) + '<input id="dialog-input" data-dialog-field="name" maxlength="120" data-dialog-required></label><label class="dialog-field">' + esc(t('parentGroup')) + '<select id="dialog-group-parent" data-dialog-field="parent">' + groupParentOptions() + '</select></label>'});
+  $('dialog-group-parent').value = parentId === null ? 'root' : 'group:' + parentId;
+  const result = await pending; if (result.action !== 'confirm') return;
+  const name = result.values.name.trim(), parent = result.values.parent === 'root' ? null : result.values.parent.slice(6);
+  try { const group = await apiRequest('/api/v1/groups',jsonRequest('POST',{name,parent_id:parent})); await loadLibrary(); revealGroup(group.id); updateProjectNav(); focusScope(group.id); }
   catch (error) { await loadLibrary(); await showFailureAlert(error); }
 }
 async function renameGroup(group) {
@@ -365,8 +515,16 @@ async function renameGroup(group) {
   catch (error) { await loadLibrary(); await showFailureAlert(error); }
 }
 async function deleteGroup(group) {
-  if (!await confirmDestructive({title:t('deleteGroup'),bodyHtml:'<p><strong>' + esc(group.name) + '</strong></p><p>' + esc(t('deleteGroupDescription')) + '</p>',confirmText:t('deleteGroup')})) return;
-  try { await apiRequest('/api/v1/groups/' + encodeURIComponent(group.id),{method:'DELETE'}); await loadLibrary(); focusScope(null); }
+  if (group.decks.length || groupSiblings(group.id).length) {
+    await showAlert({title:t('deleteGroup'),bodyHtml:'<p>' + esc(t('groupNotEmpty')) + '</p>'}); return;
+  }
+  if (!await confirmDestructive({title:t('deleteGroup'),bodyHtml:'<p><strong>' + esc(groupPath(group.id)) + '</strong></p><p>' + esc(t('deleteGroupDescription')) + '</p>',confirmText:t('deleteGroup')})) return;
+  try {
+    await apiRequest('/api/v1/groups/' + encodeURIComponent(group.id),{method:'DELETE'});
+    if (currentGroupId() === group.id) libraryState.nav = groupParent(group) === null ? 'all' : 'group:' + groupParent(group);
+    await loadLibrary();
+    if (groupParent(group)) focusScope(groupParent(group)); else $('nav-all').focus({preventScroll:true});
+  }
   catch (error) { await loadLibrary(); await showFailureAlert(error); }
 }
 async function renameDeck(deck) {
@@ -412,10 +570,10 @@ document.querySelectorAll('#sidebar > .side-link,#nav-ungrouped').forEach(button
 $('nav-ungrouped').ondragover = event => { if (dragState?.kind === 'deck') { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; showDropHighlight($('nav-ungrouped'),'deck-drop-target'); } };
 $('nav-ungrouped').ondrop = event => dropDecks(event,null,null,'end');
 $('lib-groups').ondragover = event => {
-  if (dragState?.kind !== 'deck' || currentGroupId() === undefined || event.target.closest('.lib-card')) return;
+  if (dragState?.kind !== 'deck' || currentGroupId() === undefined || includesSubgroups() || event.target.closest('.lib-card')) return;
   event.preventDefault(); showDropHighlight($('lib-groups'),'deck-drop-target');
 };
-$('lib-groups').ondrop = event => { if (!event.target.closest('.lib-card') && currentGroupId() !== undefined) dropDecks(event,currentGroupId(),null,'end'); };
+$('lib-groups').ondrop = event => { if (!includesSubgroups() && !event.target.closest('.lib-card') && currentGroupId() !== undefined) dropDecks(event,currentGroupId(),null,'end'); };
 $('lib-scroll').addEventListener('dragover',event => {
   if (dragState?.kind !== 'deck') return;
   const rect = $('lib-scroll').getBoundingClientRect();
@@ -426,7 +584,11 @@ $('selection-toggle').onclick = () => { libraryState.selectMode = !libraryState.
 $('select-all').onclick = () => { filteredDecks().forEach(deck => libraryState.selected.add(deck.id)); renderSelection(); };
 $('selection-clear').onclick = () => { libraryState.selected.clear(); libraryState.lastSelected = null; libraryState.selectMode = false; renderSelection(); };
 $('bulk-move').onclick = () => { const ids = orderedSelection(), groupId = parseDialogGroupValue($('move-target').value); const index = libraryDecksFor(groupId).filter(deck => !ids.includes(deck.id)).length; void dispatchOrganizationMove({kind:'decks',ids,groupId,index}); };
-$('lib-new-group').onclick = createGroup;
+$('lib-new-group').onclick = () => createGroup();
+$('include-subgroups').onchange = event => {
+  libraryState.includeSubgroups = event.target.checked; libraryState.visibleCount = PAGE_SIZE;
+  libraryState.sort = event.target.checked ? 'updated' : 'manual'; renderLibrary();
+};
 $('library-refresh').onclick = () => { if (location.hash) void openDeckFromHash(location.hash.slice(1),++navGeneration); else void loadLibrary(); };
 $('library-more').onclick = () => openMenu($('library-more'),[{label:t('uploadDeck'),action:'upload',disabled:uploadInFlight,onClick:uploadNewDeck},{label:t('refresh'),action:'refresh',onClick:loadLibrary}]);
 $('lib-search').oninput = () => { libraryState.nav = 'all'; libraryState.visibleCount = PAGE_SIZE; if (location.hash) location.hash = ''; else renderLibrary(); };
@@ -480,7 +642,7 @@ async function openDeckFromHash(id,generation) {
   const resolved = await loadRailScope(id);
   if (generation !== navGeneration) return;
   decks = loaded; decksLoaded = true; decksLoadFailed = false; railScopeIds = resolved.ids;
-  if (resolved.data) { libraryData = resolved.data; updateProjectNav(); }
+  if (resolved.data) { libraryData = resolved.data; revealGroup(navigationGroupId()); updateProjectNav(); }
   showViewerScreen(); void recordRecent(id); await selectDeck(id);
 }
 function route() {

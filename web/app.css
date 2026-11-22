@@ -42,6 +42,17 @@ button svg,[data-icon] svg {width:16px;height:16px;display:block;flex:none}
 .lib-group-kebab {width:25px;min-width:25px;height:32px;border-radius:6px;background:transparent;color:#9eafc8;font-size:18px}
 .lib-group-kebab:hover {background:#33435a;color:#fff}
 .project-item:has(.side-link.active) {background:#2a3b54}
+.project-item[data-depth] {padding-left:calc(var(--group-depth,0) * 12px)}
+.project-item[data-depth] .side-link {gap:8px;padding-left:4px}
+.project-item[data-depth] .side-link.active::before {left:-3px;width:2px;height:16px}
+.group-toggle-slot {width:20px;flex:none;display:flex;align-items:center;justify-content:center}
+.group-toggle {width:20px;height:28px;padding:0;display:grid;place-items:center;background:transparent;color:#899bb7;border-radius:5px}
+.group-toggle svg {width:13px;height:13px;transition:transform .15s}
+.group-toggle[aria-expanded="true"] svg {transform:rotate(90deg)}
+.group-toggle:hover {color:white;background:#33435a}
+.project-item.current-ancestor > .side-link {color:#d4dff5}
+.project-item.current-ancestor .group-toggle {color:#a8bfff}
+.project-item .count {flex:none}
 .sidebar-subsection {padding:10px 0 0;margin-top:10px;border-top:1px solid #2d4058;flex:none}
 .uncat-icon {font-size:22px;width:16px;color:#a8b8ca;line-height:1}
 .sidebar-spacer {flex:1;min-height:12px}
@@ -85,6 +96,8 @@ button svg,[data-icon] svg {width:16px;height:16px;display:block;flex:none}
 .counter {color:#8d99a8;font-size:12px;margin-left:10px;font-weight:600;vertical-align:middle;letter-spacing:0}
 .library-toolbar {display:flex;align-items:center;gap:10px;margin-bottom:19px}
 #toolbar-label {color:#738198;font-size:12px;white-space:nowrap}
+.group-scope-control {display:inline-flex;align-items:center;gap:6px;color:#65758c;font-size:11px;white-space:nowrap;cursor:pointer}
+.group-scope-control input {margin:0;accent-color:var(--blue)}
 .batch-bar {display:flex;gap:8px;align-items:center;min-height:43px;padding-bottom:7px}
 .batch-bar.has-selection {background:#ecf1fd;border:1px solid #cdd7fb;padding:10px 12px;border-radius:10px;margin-bottom:6px}
 .batch-spacer {flex:1}
@@ -142,6 +155,8 @@ button svg,[data-icon] svg {width:16px;height:16px;display:block;flex:none}
 .viewer-crumb {font-size:11px;color:#8996a8;display:flex;gap:8px;align-items:center;margin-bottom:11px}
 .viewer-crumb button {padding:0;background:none;color:#6e82a3;font-size:11px}
 .viewer-crumb button:hover {text-decoration:underline}
+#viewer-group {min-width:0;overflow-wrap:anywhere;line-height:1.6}
+.viewer-crumb > button,.viewer-crumb > span:not(#viewer-group) {flex:none}
 .viewer-title-row {display:flex;align-items:center;justify-content:space-between;gap:15px}
 .viewer-title-block {display:flex;align-items:center;gap:10px;min-width:0;flex-wrap:wrap}
 #bar .title {font-size:20px;font-weight:800;letter-spacing:-.65px;margin:0;overflow-wrap:anywhere;min-width:0}
@@ -275,6 +290,7 @@ iframe {flex:1;width:100%;min-height:100%;border:0;background:white;display:bloc
   .top-space {display:none}
   #library-refresh {display:none}
   .page {padding:25px 20px 44px}
+  .library-toolbar {flex-wrap:wrap}
   .heading-row {margin-bottom:22px}
   .heading-row h1 {font-size:24px}
   .deck-grid {grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px}

@@ -13,11 +13,14 @@
         "record_visit": "UPDATE decks SET last_viewed_at = ? WHERE id = ?"
     },
     "deck_groups": {
-        "create": "INSERT INTO deck_groups (id, name, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        "get": "SELECT id, name, sort_order, created_at, updated_at FROM deck_groups WHERE id = ?",
-        "list_ordered": "SELECT id, name, sort_order, created_at, updated_at FROM deck_groups ORDER BY sort_order ASC, id ASC",
+        "create": "INSERT INTO deck_groups (id, name, parent_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "get": "SELECT id, name, parent_id, sort_order, created_at, updated_at FROM deck_groups WHERE id = ?",
+        "list_ordered": "SELECT id, name, parent_id, sort_order, created_at, updated_at FROM deck_groups ORDER BY sort_order ASC, id ASC",
+        "list_siblings": "SELECT id FROM deck_groups WHERE parent_id IS ? ORDER BY sort_order ASC, id ASC",
+        "find_name_conflict": "SELECT id FROM deck_groups WHERE parent_id IS ? AND name = ? AND (? IS NULL OR id <> ?) LIMIT 1",
         "update_name": "UPDATE deck_groups SET name = ?, updated_at = ? WHERE id = ?",
         "update_order": "UPDATE deck_groups SET sort_order = ? WHERE id = ?",
+        "set_parent": "UPDATE deck_groups SET parent_id = ?, sort_order = ?, updated_at = ? WHERE id = ?",
         "delete": "DELETE FROM deck_groups WHERE id = ?"
     },
     "organization": {

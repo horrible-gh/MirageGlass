@@ -88,6 +88,9 @@ function jsonRequest(method, body) { return {method, headers:{'Content-Type':'ap
 function describeApiError(error) {
   if (error.status === 401 || error.status === 403) return t('unauthorized');
   if (error.status === 404) return t('notFound');
+  if (error.code === 'duplicate_group_name') return t('duplicateGroupName');
+  if (error.code === 'group_cycle') return t('groupCycle');
+  if (error.code === 'group_not_empty') return t('groupNotEmpty');
   return error.status ? error.message : t('networkError');
 }
 async function showFailureAlert(error, title = t('actionFailed')) { await showAlert({title, bodyHtml:'<p>' + esc(describeApiError(error)) + '</p>'}); }

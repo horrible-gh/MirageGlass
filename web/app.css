@@ -209,7 +209,7 @@ iframe {flex:1;width:100%;min-height:100%;border:0;background:white;display:bloc
 .version-actions button:hover {text-decoration:underline}
 .status-failed {color:#b53540}
 .empty {padding:25px 14px;color:#8b99ac;font-size:12px;line-height:1.7}
-#stage:fullscreen {background:#eef1f5;height:100dvh}
+#stage.browser-maximized {position:fixed;inset:0;width:100vw;height:100dvh;z-index:45;background:#eef1f5}
 
 .lib-menu {position:fixed;z-index:40;min-width:172px;max-width:calc(100vw - 16px);border:1px solid #e2e8ef;background:white;box-shadow:0 12px 35px #1e314729;border-radius:10px;padding:5px}
 .lib-menu-item {display:block;width:100%;text-align:left;padding:10px 11px;border-radius:6px;background:transparent;color:#465670;font-size:12px}

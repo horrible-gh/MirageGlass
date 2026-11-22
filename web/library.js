@@ -443,6 +443,7 @@ document.addEventListener('keydown',event => {
 
 let navGeneration = 0;
 function showLibraryScreen() {
+  setPreviewMaximized(false);
   $('app').hidden = true; $('library').hidden = false; railScopeIds = null;
   $('lib-zoom-controls').hidden = false;
   ++viewerLoadGeneration; ++versionLoadGeneration; ++frameGeneration;

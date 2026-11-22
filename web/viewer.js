@@ -64,13 +64,37 @@ function setHistoryVisible(visible) {
 $('history-toggle').onclick = () => setHistoryVisible(!historyVisible);
 $('history-close').onclick = () => setHistoryVisible(false);
 applyHistory();
-$('fullscreen').onclick = async () => {
-  try {
-    if (document.fullscreenElement) await document.exitFullscreen();
-    else await $('stage').requestFullscreen();
-  } catch (_) { /* Fullscreen may be disabled by an embedding browser. */ }
-};
-document.addEventListener('fullscreenchange', () => { $('fullscreen').setAttribute('aria-label', t(document.fullscreenElement ? 'exitFullScreen' : 'fullScreen')); });
+// Fill the browser tab without entering the browser/OS fullscreen mode.
+let previewMaximized = false;
+const previewBackground = ['sidebar','lib-bar','bar','rail','version-section'];
+const previewBackgroundInert = new Map();
+function setPreviewMaximized(maximized) {
+  if (previewMaximized === maximized) return;
+  previewMaximized = maximized;
+  for (const id of previewBackground) {
+    const element = $(id);
+    if (maximized) {
+      previewBackgroundInert.set(id,element.inert);
+      element.inert = true;
+    } else {
+      element.inert = previewBackgroundInert.get(id) || false;
+    }
+  }
+  if (!maximized) previewBackgroundInert.clear();
+  $('stage').classList.toggle('browser-maximized',maximized);
+  const button = $('fullscreen');
+  button.innerHTML = icon(maximized ? 'restore' : 'expand');
+  button.setAttribute('aria-pressed',String(maximized));
+  const label = t(maximized ? 'restorePreview' : 'maximizePreview');
+  button.setAttribute('aria-label',label);
+  button.title = label;
+}
+$('fullscreen').onclick = () => setPreviewMaximized(!previewMaximized);
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || !previewMaximized || activeDialog || openMenus.length) return;
+  event.preventDefault();
+  setPreviewMaximized(false);
+});
 
 function visibleRailDecks() {
   const byId = new Map(decks.map(deck => [deck.id,deck]));
